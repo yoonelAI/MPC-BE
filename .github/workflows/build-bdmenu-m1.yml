@@ -21,11 +21,19 @@ jobs:
           update: true
           install: mingw-w64-x86_64-gcc mingw-w64-x86_64-make mingw-w64-x86_64-nasm make
 
-      - name: Locate nasm.exe and add to PATH
+      - name: Install NASM to a fixed path and add to PATH
         shell: pwsh
         run: |
-          $nasm = Get-ChildItem -Path 'D:\a\_temp\setup-msys2' -Filter 'nasm.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($null -eq $nasm) { throw 'nasm.exe not found under setup-msys2 root' }
+          choco install nasm -y --no-progress
+          $roots = @('C:\Program Files\NASM','C:\msys64','D:\a\_temp\setup-msys2','C:\mingw64')
+          $nasm = $null
+          foreach ($r in $roots) {
+            if (Test-Path $r) {
+              $nasm = Get-ChildItem -Path $r -Filter 'nasm.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($null -ne $nasm) { break }
+            }
+          }
+          if ($null -eq $nasm) { throw 'nasm.exe not found anywhere' }
           Copy-Item $nasm.FullName (Join-Path $env:GITHUB_WORKSPACE 'nasm.exe') -Force
           "$env:GITHUB_WORKSPACE" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           Write-Host "nasm: $($nasm.FullName)"
