@@ -58,10 +58,11 @@ jobs:
           $vcpkg = Join-Path $env:VCPKG_INSTALLATION_ROOT 'vcpkg.exe'
           & $vcpkg install libbluray:x64-windows-static
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $libdir = Join-Path $env:VCPKG_INSTALLATION_ROOT 'installed\x64-windows-static\lib'
-          Write-Host "vcpkg lib dir: $libdir"
-          Get-ChildItem -Path $libdir -Filter '*.lib' | Copy-Item -Destination $env:GITHUB_WORKSPACE -Force
-          Get-ChildItem -Path $libdir -Filter '*.lib' | Copy-Item -Destination (Join-Path $env:GITHUB_WORKSPACE 'lib64') -Force
+          $libs = Get-ChildItem -Path 'C:\vcpkg' -Filter 'libbluray.lib' -Recurse -ErrorAction SilentlyContinue
+          if (@($libs).Count -eq 0) { throw 'libbluray.lib not found anywhere under C:\vcpkg' }
+          $libs | Select-Object -First 1 | ForEach-Object { Write-Host "lib: $($_.FullName)" }
+          $libs | Copy-Item -Destination $env:GITHUB_WORKSPACE -Force
+          $libs | Copy-Item -Destination (Join-Path $env:GITHUB_WORKSPACE 'lib64') -Force
 
       - name: Setup MSVC x64 developer environment
         uses: ilammy/msvc-dev-cmd@v1
@@ -80,10 +81,9 @@ jobs:
           call update_gcc.bat
           if not exist lib64\libmingwex.a for /r C:\mingw64 %%f in (libmingwex.a) do copy /Y "%%~f" "lib64\"
           if not exist lib64\libgcc.a for /r C:\mingw64 %%f in (libgcc.a) do copy /Y "%%~f" "lib64\"
-          set VCPKGLIB=C:\vcpkg\installed\x64-windows-static\lib
-          if exist "%VCPKGLIB%\libbluray.lib" copy /Y "%VCPKGLIB%\libbluray.lib" lib64\
-          dir "%VCPKGLIB%\libbluray.lib"
-          msbuild mpc-be.sln /t:Build /p:Configuration=Release /p:Platform=x64 /p:AdditionalLibraryDirectories="%CD%\lib64;%VCPKGLIB%;%CD%\_bin\lib\Release_x64" /m /v:minimal /nologo
+          if not exist lib64\libbluray.lib (echo ERROR: libbluray.lib missing & exit /b 1)
+          dir lib64\libbluray.lib
+          msbuild mpc-be.sln /t:Build /p:Configuration=Release /p:Platform=x64 /p:AdditionalLibraryDirectories="%CD%\lib64;%CD%\_bin\lib\Release_x64" /m /v:minimal /nologo
 
       - name: Package portable zip
         shell: pwsh
