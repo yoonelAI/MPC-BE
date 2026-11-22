@@ -24,8 +24,11 @@ jobs:
       - name: Install NASM and expose MinGW cross tools on PATH
         shell: pwsh
         run: |
-          choco install nasm -y --no-progress
-          $roots = @('C:\Program Files\NASM','C:\msys64','D:\a\_temp\setup-msys2','C:\mingw64')
+          $zip = Join-Path $env:RUNNER_TEMP 'nasm.zip'
+          Invoke-WebRequest -Uri 'https://www.nasm.us/pub/nasm/releasebuilds/2.16.01/win64/nasm-2.16.01-win64.zip' -OutFile $zip
+          $nasmDir = Join-Path $env:RUNNER_TEMP 'nasm'
+          Expand-Archive -Path $zip -DestinationPath $nasmDir -Force
+          $roots = @($nasmDir,'C:\Program Files\NASM','C:\msys64','D:\a\_temp\setup-msys2','C:\mingw64')
           $tools = @('nasm.exe','x86_64-w64-mingw32-ar.exe','x86_64-w64-mingw32-gcc.exe','x86_64-w64-mingw32-ranlib.exe')
           $dirs = @($env:GITHUB_WORKSPACE)
           foreach ($tool in $tools) {
@@ -58,11 +61,15 @@ jobs:
           $vcpkg = Join-Path $env:VCPKG_INSTALLATION_ROOT 'vcpkg.exe'
           & $vcpkg install libbluray:x64-windows-static
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $libs = Get-ChildItem -Path 'C:\vcpkg' -Filter 'libbluray.lib' -Recurse -ErrorAction SilentlyContinue
-          if (@($libs).Count -eq 0) { throw 'libbluray.lib not found anywhere under C:\vcpkg' }
-          $libs | Select-Object -First 1 | ForEach-Object { Write-Host "lib: $($_.FullName)" }
+          $libs = Get-ChildItem -Path 'C:\vcpkg' -Filter '*.lib' -Recurse -ErrorAction SilentlyContinue
+          Write-Host "lib count: $(@($libs).Count)"
+          $libs | Where-Object { $_.Name -like '*bluray*' } | ForEach-Object { Write-Host "lib: $($_.FullName)" }
+          if (@($libs).Count -eq 0) { throw 'no .lib produced by vcpkg' }
           $libs | Copy-Item -Destination $env:GITHUB_WORKSPACE -Force
           $libs | Copy-Item -Destination (Join-Path $env:GITHUB_WORKSPACE 'lib64') -Force
+          $bluray = $libs | Where-Object { $_.Name -like '*bluray*.lib' } | Select-Object -First 1
+          if ($null -eq $bluray) { throw 'libbluray.lib not produced by vcpkg' }
+          Copy-Item $bluray.FullName (Join-Path $env:GITHUB_WORKSPACE 'lib64\libbluray.lib') -Force
 
       - name: Setup MSVC x64 developer environment
         uses: ilammy/msvc-dev-cmd@v1
