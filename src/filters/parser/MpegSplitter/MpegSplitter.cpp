@@ -26,7 +26,7 @@
 #include <wmcodecdsp.h>
 #include <moreuuids.h>
 #include "MpegSplitter.h"
-#include "LibblurayReader.h"
+#include "../BaseSplitter/LibblurayReader.h"
 #include <basestruct.h>
 #include "DSUtil/FileHandle.h"
 
