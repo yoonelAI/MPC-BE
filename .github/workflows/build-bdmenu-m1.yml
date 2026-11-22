@@ -59,6 +59,19 @@ jobs:
           & $vcpkg install libbluray:x64-windows-static
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Stage vcpkg static libs into workspace
+        shell: pwsh
+        run: |
+          $root = $env:VCPKG_INSTALLATION_ROOT
+          for ($i=0; $i -lt 5; $i++) {
+            $candidate = Join-Path $root 'installed\x64-windows-static\lib'
+            if (Test-Path (Join-Path $candidate 'libbluray.lib')) { break }
+            $root = Split-Path $root -Parent
+          }
+          Write-Host "vcpkg lib dir: $candidate"
+          if (-not (Test-Path (Join-Path $candidate 'libbluray.lib'))) { throw 'libbluray.lib not found' }
+          Get-ChildItem -Path $candidate -Filter '*.lib' | Copy-Item -Destination $env:GITHUB_WORKSPACE -Force
+
       - name: Setup MSVC x64 developer environment
         uses: ilammy/msvc-dev-cmd@v1
         with:
