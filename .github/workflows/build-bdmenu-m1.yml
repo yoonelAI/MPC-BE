@@ -1,0 +1,57 @@
+name: build-bdmenu-m1
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup MSYS2 / MinGW-w64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-make make
+
+      - name: Install libbluray (static, via vcpkg)
+        shell: pwsh
+        run: |
+          $vcpkg = Join-Path $env:VCPKG_INSTALLATION_ROOT 'vcpkg.exe'
+          & $vcpkg install libbluray:x64-windows-static
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Setup MSVC x64 developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build MPC-BE 1.9.3 + M1 reader
+        shell: cmd
+        run: |
+          echo @ECHO OFF > environments.bat
+          echo SET "MPCBE_MSYS=C:\msys64" >> environments.bat
+          echo SET "MPCBE_MINGW=C:\msys64\mingw64" >> environments.bat
+          set PATH=C:\msys64\usr\bin;C:\msys64\mingw64\bin;%PATH%
+          call update_gcc.bat
+          msbuild mpc-be.sln /t:Build /p:Configuration=Release /p:Platform=x64 /m /v:minimal /nologo
+
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          $vcpkgLib = Join-Path $env:VCPKG_INSTALLATION_ROOT 'installed\x64-windows-static\lib\libbluray.lib'
+          if (Test-Path $vcpkgLib) { Copy-Item $vcpkgLib "_bin\lib\Release_x64\" -Force }
+          Compress-Archive -Path "_bin\*" -DestinationPath "MPC-BE-BDMenu-M1-x64.zip" -Force
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MPC-BE-BDMenu-M1-x64
+          path: MPC-BE-BDMenu-M1-x64.zip

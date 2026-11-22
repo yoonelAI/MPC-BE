@@ -85,6 +85,10 @@ class __declspec(uuid("DC257063-045F-4BE2-BD5B-E12279C464F0"))
 	HRESULT CreateOutputs(IAsyncReader* pAsyncReader);
 	void	ReadClipInfo(LPCOLESTR pszFileName);
 
+	// BDMENU: route ISO / BDMV folder byte streams through libbluray.
+	IAsyncReader* CreateReader(LPCWSTR pszFileName, bool bPlaylist,
+		CHdmvClipInfo::CPlaylist& Items, HRESULT& hr) override;
+
 	STDMETHODIMP GetDuration(LONGLONG* pDuration);
 
 	bool DemuxInit();

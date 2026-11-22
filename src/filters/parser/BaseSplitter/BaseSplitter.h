@@ -77,6 +77,11 @@ protected:
 	virtual HRESULT CreateOutputs(IAsyncReader* pAsyncReader) PURE; // override this ...
 	virtual LPCWSTR GetPartFilename(IAsyncReader* pAsyncReader);
 
+	// BDMENU: byte-source factory. Default = current file reader.
+	// Derived filters may return a virtual disc reader (libbluray) instead.
+	virtual IAsyncReader* CreateReader(LPCWSTR pszFileName, bool bPlaylist,
+		CHdmvClipInfo::CPlaylist& Items, HRESULT& hr);
+
 	LONGLONG m_nOpenProgress = 100;
 	bool m_fAbort = false;
 

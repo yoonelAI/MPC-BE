@@ -472,6 +472,15 @@ STDMETHODIMP CBaseSplitterFilter::Run(REFERENCE_TIME tStart)
 
 // IFileSourceFilter
 
+IAsyncReader* CBaseSplitterFilter::CreateReader(LPCWSTR pszFileName, bool bPlaylist,
+	CHdmvClipInfo::CPlaylist& Items, HRESULT& hr)
+{
+	if (bPlaylist) {
+		return (IAsyncReader*)DNew CAsyncFileReader(Items, hr);
+	}
+	return (IAsyncReader*)DNew CAsyncFileReader(pszFileName, hr, m_nFlag & SOURCE_SUPPORT_URL);
+}
+
 STDMETHODIMP CBaseSplitterFilter::Load(LPCOLESTR pszFileName, const AM_MEDIA_TYPE* pmt)
 {
 	CheckPointer(pszFileName, E_POINTER);
@@ -480,11 +489,8 @@ STDMETHODIMP CBaseSplitterFilter::Load(LPCOLESTR pszFileName, const AM_MEDIA_TYP
 	HRESULT hr = E_FAIL;
 	CComPtr<IAsyncReader> pAsyncReader;
 
-	if (BuildPlaylist(pszFileName, m_Items)) {
-		pAsyncReader = (IAsyncReader*)DNew CAsyncFileReader(m_Items, hr);
-	} else {
-		pAsyncReader = (IAsyncReader*)DNew CAsyncFileReader(pszFileName, hr, m_nFlag & SOURCE_SUPPORT_URL);
-	}
+	const bool bPlaylist = BuildPlaylist(pszFileName, m_Items);
+	pAsyncReader = CreateReader(pszFileName, bPlaylist, m_Items, hr);
 
 	if (FAILED(hr)
 			|| FAILED(hr = DeleteOutputs())

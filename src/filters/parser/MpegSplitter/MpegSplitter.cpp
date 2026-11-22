@@ -26,6 +26,7 @@
 #include <wmcodecdsp.h>
 #include <moreuuids.h>
 #include "MpegSplitter.h"
+#include "LibblurayReader.h"
 #include <basestruct.h>
 #include "DSUtil/FileHandle.h"
 
@@ -703,11 +704,48 @@ void CMpegSplitterFilter::ReadClipInfo(LPCOLESTR pszFileName)
 	}
 }
 
+// BDMENU: replace the byte source for disc images / BDMV folders.
+// Everything else (demux, decoders, renderer) remains completely untouched.
+IAsyncReader* CMpegSplitterFilter::CreateReader(LPCWSTR pszFileName, bool bPlaylist,
+	CHdmvClipInfo::CPlaylist& Items, HRESULT& hr)
+{
+	if (CLibblurayReader::IsDiscPath(pszFileName)) {
+		uint32_t playlist = 0;
+		if (!Items.empty()) {
+			CStringW fn = Items.front().m_strFileName;
+			const int slash = fn.ReverseFind(L'\\');
+			if (slash >= 0) {
+				fn = fn.Mid(slash + 1);
+			}
+			const int dot = fn.Find(L'.');
+			if (dot > 0) {
+				fn = fn.Left(dot);
+			}
+			playlist = _wtoi(fn);
+		}
+
+		hr = E_FAIL;
+		IAsyncReader* pReader = (IAsyncReader*)DNew CLibblurayReader(nullptr, hr, pszFileName, playlist);
+		if (pReader && SUCCEEDED(hr)) {
+			hr = S_OK;
+			return pReader;
+		}
+		if (pReader) {
+			pReader->Release();
+		}
+		hr = E_ABORT; // encrypted / damaged disc: fall back to the old behaviour
+		return nullptr;
+	}
+
+	return __super::CreateReader(pszFileName, bPlaylist, Items, hr);
+}
+
 STDMETHODIMP CMpegSplitterFilter::Load(LPCOLESTR pszFileName, const AM_MEDIA_TYPE* pmt)
 {
 	const CStringW ext = GetFileExt(pszFileName).MakeLower();
 
-	if (ext == L".iso" || ext == L".mdf") { // ignore the disk images without signature
+	// BDMENU: .iso is now handled by CLibblurayReader (no mounting, no admin).
+	if (ext == L".mdf") { // ignore the disk images without signature
 		return E_ABORT;
 	}
 
