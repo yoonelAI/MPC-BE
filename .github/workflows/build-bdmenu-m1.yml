@@ -92,6 +92,13 @@ jobs:
           if not exist lib64\libgcc.a for /r C:\mingw64 %%f in (libgcc.a) do copy /Y "%%~f" "lib64\"
           if not exist lib64\libbluray.lib (echo ERROR: libbluray.lib missing & exit /b 1)
           dir lib64\libbluray.lib
+          if not exist revision.h (
+            echo #pragma once > revision.h
+            echo #define REV_DATE "2026-11-23" >> revision.h
+            echo #define REV_BRANCH "bdmenu-m1" >> revision.h
+            echo #define REV_HASH "0" >> revision.h
+            echo #define REV_NUM 0 >> revision.h
+          )
           msbuild mpc-be.sln /t:Build /p:Configuration=Release /p:Platform=x64 /p:AdditionalLibraryDirectories="%CD%\lib64;%CD%\_bin\lib\Release_x64" /m /v:minimal /nologo
 
       - name: Package portable zip
