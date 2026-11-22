@@ -37,10 +37,14 @@ jobs:
         shell: cmd
         run: |
           echo @ECHO OFF > environments.bat
-          echo SET "MPCBE_MSYS=C:\msys64" >> environments.bat
-          echo SET "MPCBE_MINGW=C:\msys64\mingw64" >> environments.bat
-          set PATH=C:\msys64\usr\bin;C:\msys64\mingw64\bin;%PATH%
+          echo SET "MPCBE_MSYS=C:\mingw64" >> environments.bat
+          echo SET "MPCBE_MINGW=C:\mingw64" >> environments.bat
+          set PATH=C:\mingw64\bin;D:\a\_temp\setup-msys2\mingw64\bin;D:\a\_temp\setup-msys2\usr\bin;%PATH%
+          where gcc
+          where nasm
           call update_gcc.bat
+          if not exist lib64\libmingwex.a for /r C:\mingw64 %%f in (libmingwex.a) do copy /Y "%%~f" "lib64\"
+          if not exist lib64\libgcc.a for /r C:\mingw64 %%f in (libgcc.a) do copy /Y "%%~f" "lib64\"
           msbuild mpc-be.sln /t:Build /p:Configuration=Release /p:Platform=x64 /m /v:minimal /nologo
 
       - name: Package portable zip
