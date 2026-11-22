@@ -61,6 +61,7 @@ jobs:
           $libdir = Join-Path $env:VCPKG_INSTALLATION_ROOT 'installed\x64-windows-static\lib'
           Write-Host "vcpkg lib dir: $libdir"
           Get-ChildItem -Path $libdir -Filter '*.lib' | Copy-Item -Destination $env:GITHUB_WORKSPACE -Force
+          Get-ChildItem -Path $libdir -Filter '*.lib' | Copy-Item -Destination (Join-Path $env:GITHUB_WORKSPACE 'lib64') -Force
 
       - name: Setup MSVC x64 developer environment
         uses: ilammy/msvc-dev-cmd@v1
