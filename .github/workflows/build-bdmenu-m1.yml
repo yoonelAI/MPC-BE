@@ -62,12 +62,15 @@ jobs:
           & $vcpkg install libbluray:x64-windows
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $libs = Get-ChildItem -Path 'C:\vcpkg' -Filter '*.lib' -Recurse -ErrorAction SilentlyContinue
-          $bluray = $libs | Where-Object { $_.Name -like '*bluray*.lib' } | Select-Object -First 1
+          $bluray = $libs | Where-Object { $_.Name -eq 'bluray.lib' -and $_.FullName -notlike '*\debug\*' -and $_.FullName -notlike '*-dbg\*' } | Select-Object -First 1
+          if ($null -eq $bluray) { $bluray = $libs | Where-Object { $_.Name -like '*bluray*.lib' } | Select-Object -First 1 }
           if ($null -eq $bluray) { throw 'libbluray.lib not produced by vcpkg' }
           Write-Host "lib: $($bluray.FullName)"
           Copy-Item $bluray.FullName (Join-Path $env:GITHUB_WORKSPACE 'lib64\libbluray.lib') -Force
+          $dest = Join-Path $env:GITHUB_WORKSPACE '_bin\mpc-be_x64'
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
           $dlls = Get-ChildItem -Path 'C:\vcpkg\installed\x64-windows\bin' -Filter '*.dll' -ErrorAction SilentlyContinue
-          $dlls | Copy-Item -Destination (Join-Path $env:GITHUB_WORKSPACE '_bin\mpc-be_x64') -Force
+          $dlls | Copy-Item -Destination $dest -Force
           Write-Host "dll count: $(@($dlls).Count)"
 
       - name: Setup MSVC x64 developer environment
