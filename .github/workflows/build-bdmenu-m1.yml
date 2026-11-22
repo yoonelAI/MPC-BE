@@ -80,7 +80,9 @@ jobs:
           call update_gcc.bat
           if not exist lib64\libmingwex.a for /r C:\mingw64 %%f in (libmingwex.a) do copy /Y "%%~f" "lib64\"
           if not exist lib64\libgcc.a for /r C:\mingw64 %%f in (libgcc.a) do copy /Y "%%~f" "lib64\"
-          msbuild mpc-be.sln /t:Build /p:Configuration=Release /p:Platform=x64 /m /v:minimal /nologo
+          if not exist lib64\libbluray.lib (echo ERROR: libbluray.lib missing in lib64 & exit /b 1)
+          dir lib64\libbluray.lib
+          msbuild mpc-be.sln /t:Build /p:Configuration=Release /p:Platform=x64 /p:AdditionalLibraryDirectories="%CD%\lib64;%CD%\_bin\lib\Release_x64" /m /v:minimal /nologo
 
       - name: Package portable zip
         shell: pwsh
