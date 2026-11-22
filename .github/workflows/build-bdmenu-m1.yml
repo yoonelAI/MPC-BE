@@ -36,6 +36,15 @@ jobs:
                 if ($null -ne $found) { break }
               }
             }
+            if ($null -eq $found -and $tool -in @('x86_64-w64-mingw32-ar.exe','x86_64-w64-mingw32-ranlib.exe')) {
+              $llvmName = if ($tool -like '*ar.exe') { 'llvm-ar.exe' } else { 'llvm-ranlib.exe' }
+              $llvm = "C:\Program Files\LLVM\bin\$llvmName"
+              if (Test-Path $llvm) {
+                Write-Host "$tool fallback -> $llvm"
+                Copy-Item $llvm (Join-Path $env:GITHUB_WORKSPACE $tool) -Force
+                continue
+              }
+            }
             if ($null -eq $found) { Write-Host "WARN: $tool not found"; continue }
             Write-Host "$tool -> $($found.FullName)"
             Copy-Item $found.FullName (Join-Path $env:GITHUB_WORKSPACE $tool) -Force
