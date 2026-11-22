@@ -21,6 +21,15 @@ jobs:
           update: true
           install: mingw-w64-x86_64-gcc mingw-w64-x86_64-make mingw-w64-x86_64-nasm make
 
+      - name: Locate nasm.exe and add to PATH
+        shell: pwsh
+        run: |
+          $nasm = Get-ChildItem -Path 'D:\a\_temp\setup-msys2' -Filter 'nasm.exe' -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($null -eq $nasm) { throw 'nasm.exe not found under setup-msys2 root' }
+          Copy-Item $nasm.FullName (Join-Path $env:GITHUB_WORKSPACE 'nasm.exe') -Force
+          "$env:GITHUB_WORKSPACE" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          Write-Host "nasm: $($nasm.FullName)"
+
       - name: Install libbluray (static, via vcpkg)
         shell: pwsh
         run: |
@@ -39,7 +48,7 @@ jobs:
           echo @ECHO OFF > environments.bat
           echo SET "MPCBE_MSYS=C:\mingw64" >> environments.bat
           echo SET "MPCBE_MINGW=C:\mingw64" >> environments.bat
-          set PATH=C:\mingw64\bin;D:\a\_temp\setup-msys2\mingw64\bin;D:\a\_temp\setup-msys2\usr\bin;%PATH%
+          set PATH=%CD%;C:\mingw64\bin;D:\a\_temp\setup-msys2\mingw64\bin;D:\a\_temp\setup-msys2\usr\bin;%PATH%
           where gcc
           where nasm
           call update_gcc.bat
