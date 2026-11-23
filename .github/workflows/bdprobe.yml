@@ -1,0 +1,56 @@
+name: BDProbe Build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ bdmenu-qw ]
+    paths: [ 'bdmenu/**' ]
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-bin
+          key: vcpkg-libbluray-x64-v1
+
+      - name: Install libbluray via vcpkg
+        shell: pwsh
+        run: |
+          $env:VCPKG_DEFAULT_BINARY_CACHE = "$env:RUNNER_TEMP\vcpkg-bin"
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install libbluray:x64-windows
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-ChildItem "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\lib" | Select-Object Name
+          Get-ChildItem "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" | Select-Object Name
+
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build bdprobe
+        shell: pwsh
+        run: |
+          $v = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
+          $lib = Get-ChildItem "$v\lib" -Filter '*bluray*.lib' | Select-Object -First 1
+          if (-not $lib) { throw 'libbluray import lib not found' }
+          Write-Host "import lib: $($lib.FullName)"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          cl /nologo /O2 /W3 /utf-8 /I "$v\include" bdmenu\tools\bdprobe.c /Fedist\bdprobe.exe /link "$($lib.FullName)"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Copy-Item "$v\bin\*.dll" dist\
+          Copy-Item bdmenu\tools\run_bdprobe.cmd dist\
+          Get-ChildItem dist | Select-Object Name, Length
+
+      - name: Upload bdprobe
+        uses: actions/upload-artifact@v7
+        with:
+          name: bdprobe-x64
+          path: dist/**

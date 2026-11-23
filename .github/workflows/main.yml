@@ -9,6 +9,8 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
+      - 'bdmenu/tools/**'
+      - '.github/workflows/bdprobe.yml'
 
 jobs:
   build:
@@ -45,9 +47,16 @@ jobs:
           path: _bin/logs/**
           if-no-files-found: ignore
 
-      - name: Upload portable x64
+      - name: Unpack portable to plain folder
+        shell: pwsh
+        run: |
+          $pkg = Get-ChildItem _bin/Packages -Recurse -Filter 'MPC-BE*.x64.7z' | Select-Object -First 1
+          if (-not $pkg) { throw 'portable 7z not found' }
+          7z x $pkg.FullName -o_dist -y | Out-Null
+          Get-ChildItem _dist -Recurse | Select-Object -First 40 FullName
+
+      - name: Upload portable x64 (zip)
         uses: actions/upload-artifact@v7
         with:
-          name: MPC-BE-BDMenu-P0-x64
-          path: _bin/Packages/**/MPC-BE*.x64.7z
-          compression-level: 0
+          name: MPC-BE-BDMenu-x64
+          path: _dist/**
