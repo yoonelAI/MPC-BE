@@ -1,32 +1,19 @@
-name: Build MPC-BE
+name: BDMenu Build
 
+# P0: build vanilla MPC-BE 1.9.3 x64 portable exactly like upstream CI.
+# Only runs on branch bdmenu-qw (or manually).
 on:
+  workflow_dispatch:
   push:
+    branches: [ bdmenu-qw ]
     paths-ignore:
-      - .github/workflows/main.yml
-      - '**.txt'
       - '**.md'
-      - '**.cmd'
-      - '**.bat'
-      - '**.manifest.conf'
-      - '**.manifest.template'
-      - include/Version.h
-  pull_request:
-    paths-ignore:
-      - .github/workflows/main.yml
-      - '**.txt'
-      - '**.md'
-      - '**.cmd'
-      - '**.bat'
-      - '**.vcxproj.filters'
-      - '**.manifest.conf'
-      - '**.manifest.template'
-      - include/Version.h
+      - 'docs/**'
 
 jobs:
   build:
     runs-on: windows-2022
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     steps:
       - name: Checkout repository
@@ -45,40 +32,22 @@ jobs:
           .\\update_gcc.bat
         shell: pwsh
 
-      - name: Clean
+      - name: Build MPC-BE x64 portable
         run: |
-          .\\build.bat Clean All NoWait
+          .\\build.bat Build x64 Zip NoWait
         shell: pwsh
 
-      - name: Build MPC-BE
-        run: |
-          .\\build.bat Build Packages NoWait
-        shell: pwsh
-
-      - name: Upload Installer x64
+      - name: Upload build logs
+        if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: "Installer x64" 
-          path: _bin/Packages/**/MPC-BE*.x64-installer.zip
-          compression-level: 0
+          name: build-logs
+          path: _bin/logs/**
+          if-no-files-found: ignore
 
-      - name: Upload Zip x64
+      - name: Upload portable x64
         uses: actions/upload-artifact@v7
         with:
-          name: "Zip x64" 
+          name: MPC-BE-BDMenu-P0-x64
           path: _bin/Packages/**/MPC-BE*.x64.7z
-          compression-level: 0
-
-      - name: Upload Installer x86
-        uses: actions/upload-artifact@v7
-        with:
-          name: "Installer x86" 
-          path: _bin/Packages/**/MPC-BE*.x86-installer.zip
-          compression-level: 0
-
-      - name: Upload Zip x86
-        uses: actions/upload-artifact@v7
-        with:
-          name: "Zip x86" 
-          path: _bin/Packages/**/MPC-BE*.x86.7z
           compression-level: 0
