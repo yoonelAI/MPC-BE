@@ -104,9 +104,15 @@ jobs:
       - name: Package portable zip
         shell: pwsh
         run: |
-          $vcpkgLib = Join-Path $env:VCPKG_INSTALLATION_ROOT 'installed\x64-windows-static\lib\libbluray.lib'
-          if (Test-Path $vcpkgLib) { Copy-Item $vcpkgLib "_bin\lib\Release_x64\" -Force }
-          Compress-Archive -Path "_bin\*" -DestinationPath "MPC-BE-BDMenu-M1-x64.zip" -Force
+          $stage = Join-Path $env:RUNNER_TEMP 'green'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          $exe = Get-ChildItem -Path '_bin' -Filter 'mpc-be64.exe' -Recurse | Select-Object -First 1
+          if ($null -eq $exe) { throw 'mpc-be64.exe not found' }
+          Copy-Item $exe.FullName $stage -Force
+          Get-ChildItem -Path '_bin' -Filter '*.dll' -Recurse | Copy-Item -Destination $stage -Force
+          foreach ($f in @('docs\MPC-BE-BDMenu-说明.txt')) { if (Test-Path $f) { Copy-Item $f $stage -Force } }
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath 'MPC-BE-BDMenu-M1-x64.zip' -Force
+          Write-Host "package size: $((Get-Item 'MPC-BE-BDMenu-M1-x64.zip').Length) bytes"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
