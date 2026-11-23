@@ -1,10 +1,13 @@
 @echo off
-chcp 65001 >nul
+cd /d "%~dp0"
+set "LOG=%~dp0bdprobe_log.txt"
 set "DISC=%~1"
-if "%DISC%"=="" set "DISC=C:\è¿…é›·ä¸‹è½½\Vita.and.Virginia.2018.1080p.BluRay.AVC.DTS-HD.MA.5.1-OCULAR"
-echo æ­£åœ¨æµ‹è¯•: %DISC%
-"%~dp0bdprobe.exe" "%DISC%" "%~dp0out" 2 > "%~dp0bdprobe_log.txt" 2>&1
-type "%~dp0bdprobe_log.txt"
+if "%DISC%"=="" set "DISC=C:\Ñ¸À×ÏÂÔØ\Vita.and.Virginia.2018.1080p.BluRay.AVC.DTS-HD.MA.5.1-OCULAR"
+echo ÕýÔÚ²âÊÔ: %DISC%
+echo ÇëÉÔºò£¬×î¶àÔ¼ 90 Ãë...
+bdprobe.exe "%DISC%" "%~dp0out" 2 > "%LOG%" 2>&1
+echo exitcode=%ERRORLEVEL%>> "%LOG%"
+type "%LOG%"
 echo.
-echo å®Œæˆï¼Œç»“æžœåœ¨ bdprobe_log.txt å’Œ out æ–‡ä»¶å¤¹
+echo Íê³É£¬Çë»Øµ½ÁÄÌì¸æËßÎÒ
 pause
