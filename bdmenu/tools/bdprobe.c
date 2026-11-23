@@ -205,15 +205,47 @@ int wmain(int argc, wchar_t **argv)
     }
     char *path = w2u8(argv[1]);
     int region = argc > 3 ? _wtoi(argv[3]) : 2;
-    _wmkdir(argv[2]);
+    static wchar_t outabs[MAX_PATH];
+    if (!_wfullpath(outabs, argv[2], MAX_PATH)) wcsncpy(outabs, argv[2], MAX_PATH - 1);
+    _wmkdir(outabs);
 
     int maj, min, mic;
     bd_get_version(&maj, &min, &mic);
     printf("libbluray %d.%d.%d\n", maj, min, mic);
     printf("disc: %s\nregion mask: %d\n", path, region);
 
+    /* open strategy 1: UTF-8 path as given */
+    printf("[open] try utf8 path\n");
     BLURAY *bd = bd_open(path, NULL);
-    if (!bd) { printf("RESULT: FAIL bd_open\n"); return 2; }
+    if (!bd) {
+        /* strategy 2: 8.3 short path (pure ASCII if 8.3 names enabled) */
+        wchar_t sp[MAX_PATH];
+        DWORD n = GetShortPathNameW(argv[1], sp, MAX_PATH);
+        if (n > 0 && n < MAX_PATH) {
+            char *s8 = w2u8(sp);
+            printf("[open] try short path: %s\n", s8);
+            bd = bd_open(s8, NULL);
+            free(s8);
+        } else {
+            printf("[open] no short path (err %lu)\n", GetLastError());
+        }
+    }
+    if (!bd) {
+        /* strategy 3: chdir into disc root and open relative "." */
+        DWORD attr = GetFileAttributesW(argv[1]);
+        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
+            if (SetCurrentDirectoryW(argv[1])) {
+                printf("[open] try chdir + \".\"\n");
+                bd = bd_open(".", NULL);
+            } else {
+                printf("[open] chdir failed (err %lu)\n", GetLastError());
+            }
+        } else {
+            printf("[open] path attr=0x%lx err=%lu\n", attr, GetLastError());
+        }
+    }
+    if (!bd) { printf("RESULT: FAIL bd_open (all strategies)\n"); return 2; }
+    printf("[open] OK\n");
 
     const BLURAY_DISC_INFO *di = bd_get_disc_info(bd);
     printf("bluray_detected=%d first_play=%d top_menu=%d\n",
@@ -245,7 +277,7 @@ int wmain(int argc, wchar_t **argv)
 
     CTX ctx;
     memset(&ctx, 0, sizeof(ctx));
-    ctx.outdir = argv[2];
+    ctx.outdir = outabs;
     bd_register_overlay_proc(bd, &ctx, overlay_cb);
 
     if (!bd_play(bd)) { printf("RESULT: FAIL bd_play\n"); bd_close(bd); return 3; }
