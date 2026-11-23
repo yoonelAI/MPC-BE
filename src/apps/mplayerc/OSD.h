@@ -198,6 +198,7 @@ private:
 	void DrawFlybar();
 	void DrawRect(CRect& rect, CBrush* pBrush = nullptr, CPen* pPen = nullptr);
 	void InvalidateBitmapOSD();
+	void DrawLibblurayMenu(); // M2
 	void DrawMessage();
 	void DrawDebug();
 

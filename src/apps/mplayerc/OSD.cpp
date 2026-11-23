@@ -500,6 +500,45 @@ void COSD::DrawDebug()
 	}
 }
 
+void COSD::DrawLibblurayMenu()
+{
+	CComPtr<ILibblurayMenu> pMenu = m_pMainFrame->GetLibblurayMenu();
+	if (!pMenu || m_BitmapInfo.bmBitsPixel != 32 || !m_BitmapInfo.bmBits) {
+		return;
+	}
+
+	const BYTE* pBits = nullptr;
+	ULONG w = 0, h = 0, version = 0;
+	BOOL bVisible = FALSE;
+	if (FAILED(pMenu->GetOverlay(&pBits, &w, &h, &version, &bVisible)) || !bVisible || !pBits || !w || !h) {
+		return;
+	}
+
+	const DWORD* src = reinterpret_cast<const DWORD*>(pBits);
+	DWORD* dst = static_cast<DWORD*>(m_BitmapInfo.bmBits);
+	const int dw = m_BitmapInfo.bmWidth;
+	const int dh = m_BitmapInfo.bmHeight;
+
+	// The DIB is bottom-up; libbluray's IG plane is top-down.
+	for (int y = 0; y < dh; ++y) {
+		const int sy = std::min(static_cast<int>((__int64)y * h / dh), static_cast<int>(h) - 1);
+		const DWORD* srow = src + static_cast<size_t>(sy) * w;
+		DWORD* drow = dst + static_cast<size_t>(dh - 1 - y) * dw;
+		for (int x = 0; x < dw; ++x) {
+			const int sx = std::min(static_cast<int>((__int64)x * w / dw), static_cast<int>(w) - 1);
+			const DWORD px = srow[sx];
+			const int a = (px >> 24) & 0xFF;
+			if (a < 128) {
+				continue; // EVR OSD uses black as the color key
+			}
+			const int r = std::clamp((px & 0xFF) * 255 / a, 1, 255);
+			const int g = std::clamp(((px >> 8) & 0xFF) * 255 / a, 1, 255);
+			const int b = std::clamp(((px >> 16) & 0xFF) * 255 / a, 1, 255);
+			drow[x] = 0xFF000000u | (r << 16) | (g << 8) | b;
+		}
+	}
+}
+
 void COSD::InvalidateBitmapOSD()
 {
 	CAutoLock Lock(&m_Lock);
@@ -519,6 +558,7 @@ void COSD::InvalidateBitmapOSD()
 
 	DrawMessage();
 	DrawDebug();
+	DrawLibblurayMenu();
 
 	m_pMFVMB->SetAlphaBitmap(&m_MFVAlphaBitmap);
 

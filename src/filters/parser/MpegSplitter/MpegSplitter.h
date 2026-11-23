@@ -23,6 +23,7 @@
 
 #include "../BaseSplitter/BaseSplitter.h"
 #include "../BaseSplitter/BaseSplitterParserOutputPin.h"
+#include "../BaseSplitter/LibblurayMenu.h"
 #include "MpegSplitterFile.h"
 #include "MpegSplitterSettingsWnd.h"
 #include "DSUtil/AudioParser.h"
@@ -44,6 +45,7 @@ class __declspec(uuid("DC257063-045F-4BE2-BD5B-E12279C464F0"))
 	REFERENCE_TIME	m_rtSeekOffset;
 	bool			m_pPipoBimbo;
 	CHdmvClipInfo	m_ClipInfo;
+	CComPtr<ILibblurayMenu> m_pBDMenu; // M2: exposed by CLibblurayReader
 
 	std::unique_ptr<CMpegSplitterFile> m_pFile;
 	CComQIPtr<ITrackInfo> m_pTI;

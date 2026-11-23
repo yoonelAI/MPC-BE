@@ -22,6 +22,7 @@
 #pragma once
 
 #include "Misc.h"
+#include "filters/parser/BaseSplitter/LibblurayMenu.h"
 #include "PlayerChildView.h"
 #include "PlayerPreView.h"
 #include "PlayerFlyBar.h"
@@ -230,6 +231,7 @@ class CMainFrame : public CFrameWnd, public CDropTarget, public CDPI
 	int m_iVideoSize;
 	CRect m_lastWindowRect;
 	CPoint m_lastMouseMove, m_lastMouseMoveFullScreen;
+	ULONG m_lastBDOverlayVersion = 0; // M2
 
 	CRect m_rcDesktop;
 
@@ -705,6 +707,7 @@ public:
 	void SetPreviewVideoPosition();
 
 	void RepaintVideo(const bool bForceRepaint = false);
+	CComPtr<ILibblurayMenu> GetLibblurayMenu(); // M2
 	void HideVideoWindow(bool fHide);
 
 	OAFilterState GetMediaState();

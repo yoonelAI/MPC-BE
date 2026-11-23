@@ -12,28 +12,39 @@
 #pragma once
 
 #include "AsyncReader.h"
+#include "LibblurayMenu.h"
 
 #include <libbluray/bluray.h>
+#include <libbluray/overlay.h>
 
+#include <mutex>
 #include <vector>
 
 /*
  * An IAsyncReader whose byte stream comes from libbluray instead of a file.
  *
- * This is the ONLY seam needed for disc playback: CBaseSplitterFilter::Load()
- * normally creates CAsyncFileReader; returning this object instead means every
- * downstream component (splitter / decoder / renderer) stays untouched.
- *
- * M1 scope: open ISO / BDMV folder via libbluray, select a playlist, expose a
- * seekable virtual m2ts byte stream. Menu overlays and BD-J are added in M2/M5.
- *
- * NOTE: not yet compiled - VS2022 is not installed on the development machine.
+ * M1: direct ISO/BDMV byte stream (no mounting, no admin).
+ * M2: HDMV menu overlay canvas + mouse/navigation control (ILibblurayMenu).
  */
 class CLibblurayReader :
     public CUnknown,
     public IAsyncReader,
-    public ISyncReader
+    public ISyncReader,
+    public ILibblurayMenu
 {
+    struct OverlayCanvas {
+        unsigned w = 0, h = 0;
+        ULONG version = 0;
+        bool visible = false;
+        std::vector<uint32_t> work;
+        std::vector<uint32_t> publish;
+
+        void Init(int width, int height);
+        void Clear();
+        void Wipe(int x, int y, int width, int height);
+        void Flush();
+    };
+
     BLURAY* m_pBD = nullptr;
     BLURAY_TITLE_INFO* m_pTitleInfo = nullptr;
 
@@ -43,9 +54,20 @@ class CLibblurayReader :
 
     REFERENCE_TIME* m_pPTSOffset = nullptr;
 
+    bool m_bError = false;
+    bool m_bMenuMode = false;
+
+    OverlayCanvas m_overlay;
+    std::vector<uint32_t> m_snapshot;
+    std::mutex m_overlayLock;
+
     bool OpenDisc(LPCWSTR pszPath, HRESULT& hr);
     void HandleEvent(const BD_EVENT& ev);
     void UpdatePtsOffset(unsigned playitem);
+
+    static void CALLBACK OverlayProc(void* handle, const BD_OVERLAY* ov);
+    static void PaletteToBGRA(const BD_PG_PALETTE_ENTRY* pal, uint32_t out[256]);
+    static void DrawRLE(OverlayCanvas& canvas, const BD_OVERLAY* ov);
 
 public:
     CLibblurayReader(LPUNKNOWN pUnk, HRESULT& hr, LPCWSTR pszPath, uint32_t playlist);
@@ -69,11 +91,16 @@ public:
     STDMETHODIMP_(bool) HasErrors() override { return m_bError; }
     STDMETHODIMP_(void) ClearErrors() override { m_bError = false; }
     STDMETHODIMP_(void) SetPTSOffset(REFERENCE_TIME* rt) override { m_pPTSOffset = rt; }
-    STDMETHODIMP_(int) GetSourceType() override { return 0; /* LOCAL - do not disturb existing logic */ }
+    STDMETHODIMP_(int) GetSourceType() override { return 0; }
     STDMETHODIMP ReOpen(CHdmvClipInfo::CPlaylist& Items) override;
 
-    static bool IsDiscPath(LPCWSTR pszPath);
+    // ILibblurayMenu
+    STDMETHODIMP GetOverlay(const BYTE** ppBits, ULONG* pWidth, ULONG* pHight,
+        ULONG* pVersion, BOOL* pVisible) override;
+    STDMETHODIMP MouseSelect(WORD x, WORD y, BOOL bActivate) override;
+    STDMETHODIMP UserInput(DWORD key) override;
+    STDMETHODIMP MenuCall() override;
+    STDMETHODIMP IsMenuMode(BOOL* pMenuMode) override;
 
-private:
-    bool m_bError = false;
+    static bool IsDiscPath(LPCWSTR pszPath);
 };
