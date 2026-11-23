@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [ bdmenu-qw ]
-    paths: [ 'bdmenu/**' ]
+    paths: [ 'bdmenu/**', '.github/workflows/bdprobe.yml' ]
 
 jobs:
   build:
@@ -18,35 +18,32 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/vcpkg-bin
-          key: vcpkg-libbluray-x64-v1
+          key: vcpkg-libbluray-x64-static-v1
 
-      - name: Install libbluray via vcpkg
+      - name: Install libbluray (static) via vcpkg
         shell: pwsh
         run: |
           $env:VCPKG_DEFAULT_BINARY_CACHE = "$env:RUNNER_TEMP\vcpkg-bin"
           New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
-          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install libbluray:x64-windows
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install libbluray:x64-windows-static
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          Get-ChildItem "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\lib" | Select-Object Name
-          Get-ChildItem "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows\bin" | Select-Object Name
+          Get-ChildItem "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static\lib" -Filter *.lib | Select-Object Name, Length
 
       - name: Setup MSVC
         uses: ilammy/msvc-dev-cmd@v1
         with:
           arch: x64
 
-      - name: Build bdprobe
+      - name: Build bdprobe (single exe, static CRT)
         shell: pwsh
         run: |
-          $v = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows"
-          $lib = Get-ChildItem "$v\lib" -Filter '*bluray*.lib' | Select-Object -First 1
-          if (-not $lib) { throw 'libbluray import lib not found' }
-          Write-Host "import lib: $($lib.FullName)"
+          $v = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static"
+          $libs = (Get-ChildItem "$v\lib" -Filter '*.lib' | ForEach-Object { $_.FullName })
           New-Item -ItemType Directory -Force dist | Out-Null
-          cl /nologo /O2 /W3 /utf-8 /I "$v\include" bdmenu\tools\bdprobe.c /Fedist\bdprobe.exe /link "$($lib.FullName)"
+          cl /nologo /O2 /W3 /MT /utf-8 /I "$v\include" bdmenu\tools\bdprobe.c /Fedist\bdprobe.exe /link $libs gdi32.lib user32.lib shell32.lib advapi32.lib bcrypt.lib ole32.lib ws2_32.lib
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
-          Copy-Item "$v\bin\*.dll" dist\
           Copy-Item bdmenu\tools\run_bdprobe.cmd dist\
+          dumpbin /dependents dist\bdprobe.exe
           Get-ChildItem dist | Select-Object Name, Length
 
       - name: Upload bdprobe
