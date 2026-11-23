@@ -43,6 +43,7 @@ jobs:
           cl /nologo /O2 /W3 /MT /utf-8 /I "$v\include" bdmenu\tools\bdprobe.c /Fedist\bdprobe.exe /link $libs gdi32.lib user32.lib shell32.lib advapi32.lib bcrypt.lib ole32.lib ws2_32.lib
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           Copy-Item bdmenu\tools\run_bdprobe.cmd dist\
+          Remove-Item dist\*.exp, dist\*.lib -ErrorAction SilentlyContinue
           dumpbin /dependents dist\bdprobe.exe
           Get-ChildItem dist | Select-Object Name, Length
 
