@@ -633,6 +633,10 @@ STDMETHODIMP CMpegSplitterFilter::NonDelegatingQueryInterface(REFIID riid, void*
 {
 	CheckPointer(ppv, E_POINTER);
 
+	if (m_pBDMenu && riid == __uuidof(ILibblurayMenu)) {
+		return m_pBDMenu->QueryInterface(riid, ppv);
+	}
+
 	return
 		QI(IMpegSplitterFilter)
 		QI(ISpecifyPropertyPages)
@@ -727,6 +731,8 @@ IAsyncReader* CMpegSplitterFilter::CreateReader(LPCWSTR pszFileName, bool bPlayl
 		hr = E_FAIL;
 		IAsyncReader* pReader = (IAsyncReader*)DNew CLibblurayReader(nullptr, hr, pszFileName, playlist);
 		if (pReader && SUCCEEDED(hr)) {
+			m_pBDMenu.Release();
+			pReader->QueryInterface(__uuidof(ILibblurayMenu), reinterpret_cast<void**>(&m_pBDMenu));
 			hr = S_OK;
 			return pReader;
 		}

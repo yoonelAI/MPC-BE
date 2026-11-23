@@ -64,6 +64,7 @@
 #include "filters/TextPassThruFilter.h"
 #include "filters/ChaptersSouce.h"
 #include "filters/parser/MpegSplitter/MpegSplitter.h"
+#include "filters/parser/BaseSplitter/LibblurayMenu.h"
 #include "filters/parser/MatroskaSplitter/IMatroskaSplitter.h"
 #include "filters/switcher/AudioSwitcher/AudioSwitcher.h"
 #include "filters/transform/MPCVideoDec/MPCVideoDec.h"
@@ -2532,6 +2533,18 @@ void CMainFrame::OnTimer(UINT_PTR nIDEvent)
 			break;
 		case TIMER_STREAMPOSPOLLER:
 			if (m_eMediaLoadState == MLS_LOADED) {
+				// M2: refresh the HDMV menu whenever libbluray publishes a new IG frame
+				if (CComPtr<ILibblurayMenu> pBDMenu = GetLibblurayMenu()) {
+					const BYTE* pBits = nullptr;
+					ULONG w = 0, h = 0, version = 0;
+					BOOL bVisible = FALSE;
+					if (SUCCEEDED(pBDMenu->GetOverlay(&pBits, &w, &h, &version, &bVisible))
+						&& version != m_lastBDOverlayVersion) {
+						m_lastBDOverlayVersion = version;
+						m_OSD.InvalidateBitmapOSD();
+					}
+				}
+
 				if (m_bFullScreen) {
 					// Get the position of the cursor outside the window in fullscreen mode
 					POINT pos;
@@ -3829,6 +3842,23 @@ void CMainFrame::OnLButtonDown(UINT nFlags, CPoint point)
 
 	SetFocus();
 
+	// M2: Blu-ray HDMV menu mouse activation
+	if (CComPtr<ILibblurayMenu> pBDMenu = GetLibblurayMenu()) {
+		BOOL bMenuMode = FALSE;
+		if (SUCCEEDED(pBDMenu->IsMenuMode(&bMenuMode)) && bMenuMode) {
+			CRect vid_rect = m_wndView.GetVideoRect();
+			m_wndView.MapWindowPoints(this, &vid_rect);
+			CPoint p = point - vid_rect.TopLeft();
+			if (vid_rect.Width() > 0 && vid_rect.Height() > 0 &&
+				p.x >= 0 && p.y >= 0 && p.x < vid_rect.Width() && p.y < vid_rect.Height()) {
+				const WORD x = static_cast<WORD>((__int64)p.x * 65535 / vid_rect.Width());
+				const WORD y = static_cast<WORD>((__int64)p.y * 65535 / vid_rect.Height());
+				pBDMenu->MouseSelect(x, y, TRUE);
+				return;
+			}
+		}
+	}
+
 	if (GetPlaybackMode() == PM_DVD) {
 		CRect vid_rect = m_wndView.GetVideoRect();
 		m_wndView.MapWindowPoints(this, &vid_rect);
@@ -4074,6 +4104,23 @@ void CMainFrame::OnMouseMove(UINT nFlags, CPoint point)
 		}
 
 		SendMessageW(WM_NCLBUTTONDOWN, HTCAPTION, MAKELPARAM(m_beginCapturePoint.x, m_beginCapturePoint.y));
+	}
+
+	// M2: Blu-ray HDMV menu mouse move
+	if (CComPtr<ILibblurayMenu> pBDMenu = GetLibblurayMenu()) {
+		BOOL bMenuMode = FALSE;
+		if (SUCCEEDED(pBDMenu->IsMenuMode(&bMenuMode)) && bMenuMode) {
+			CRect vid_rect = m_wndView.GetVideoRect();
+			m_wndView.MapWindowPoints(this, &vid_rect);
+			CPoint p = point - vid_rect.TopLeft();
+			if (vid_rect.Width() > 0 && vid_rect.Height() > 0 &&
+				p.x >= 0 && p.y >= 0 && p.x < vid_rect.Width() && p.y < vid_rect.Height()) {
+				const WORD x = static_cast<WORD>((__int64)p.x * 65535 / vid_rect.Width());
+				const WORD y = static_cast<WORD>((__int64)p.y * 65535 / vid_rect.Height());
+				pBDMenu->MouseSelect(x, y, FALSE);
+				SetCursor(LoadCursorW(nullptr, IDC_HAND));
+			}
+		}
 	}
 
 	if (GetPlaybackMode() == PM_DVD) {
@@ -11932,6 +11979,21 @@ void CMainFrame::ClampWindowRect(RECT& windowRect)
 		windowRect.bottom = rcWork.bottom;
 	}
 };
+
+CComPtr<ILibblurayMenu> CMainFrame::GetLibblurayMenu()
+{
+	if (!m_pGB) {
+		return nullptr;
+	}
+
+	CComPtr<IBaseFilter> pBF;
+	if (FAILED(m_pGB->FindFilterByName(MpegSplitterName, &pBF)) || !pBF) {
+		if (FAILED(m_pGB->FindFilterByName(MpegSourceName, &pBF)) || !pBF) {
+			return nullptr;
+		}
+	}
+	return CComQIPtr<ILibblurayMenu>(pBF);
+}
 
 void CMainFrame::RepaintVideo(const bool bForceRepaint/* = false*/)
 {
