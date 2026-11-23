@@ -1,0 +1,121 @@
+name: build-bdmenu-m1
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup MSYS2 / MinGW-w64
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-make mingw-w64-x86_64-nasm make
+
+      - name: Install NASM and expose MinGW cross tools on PATH
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'nasm.zip'
+          Invoke-WebRequest -Uri 'https://www.nasm.us/pub/nasm/releasebuilds/2.16.01/win64/nasm-2.16.01-win64.zip' -OutFile $zip
+          $nasmDir = Join-Path $env:RUNNER_TEMP 'nasm'
+          Expand-Archive -Path $zip -DestinationPath $nasmDir -Force
+          $roots = @($nasmDir,'C:\Program Files\NASM','C:\msys64','D:\a\_temp\setup-msys2','C:\mingw64')
+          $tools = @('nasm.exe','x86_64-w64-mingw32-ar.exe','x86_64-w64-mingw32-gcc.exe','x86_64-w64-mingw32-ranlib.exe')
+          $dirs = @($env:GITHUB_WORKSPACE)
+          foreach ($tool in $tools) {
+            $found = $null
+            foreach ($r in $roots) {
+              if (Test-Path $r) {
+                $found = Get-ChildItem -Path $r -Filter $tool -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($null -ne $found) { break }
+              }
+            }
+            if ($null -eq $found -and $tool -in @('x86_64-w64-mingw32-ar.exe','x86_64-w64-mingw32-ranlib.exe')) {
+              $llvmName = if ($tool -like '*ar.exe') { 'llvm-ar.exe' } else { 'llvm-ranlib.exe' }
+              $llvm = "C:\Program Files\LLVM\bin\$llvmName"
+              if (Test-Path $llvm) {
+                Write-Host "$tool fallback -> $llvm"
+                Copy-Item $llvm (Join-Path $env:GITHUB_WORKSPACE $tool) -Force
+                continue
+              }
+            }
+            if ($null -eq $found) { Write-Host "WARN: $tool not found"; continue }
+            Write-Host "$tool -> $($found.FullName)"
+            Copy-Item $found.FullName (Join-Path $env:GITHUB_WORKSPACE $tool) -Force
+            $dirs += $found.DirectoryName
+          }
+          $dirs | Where-Object { $_ } | Sort-Object -Unique | ForEach-Object { $_ | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append }
+
+      - name: Install libbluray (DLL, via vcpkg)
+        shell: pwsh
+        run: |
+          $vcpkg = Join-Path $env:VCPKG_INSTALLATION_ROOT 'vcpkg.exe'
+          & $vcpkg install libbluray:x64-windows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $libs = Get-ChildItem -Path 'C:\vcpkg' -Filter '*.lib' -Recurse -ErrorAction SilentlyContinue
+          $bluray = $libs | Where-Object { $_.Name -eq 'bluray.lib' -and $_.FullName -notlike '*\debug\*' -and $_.FullName -notlike '*-dbg\*' } | Select-Object -First 1
+          if ($null -eq $bluray) { $bluray = $libs | Where-Object { $_.Name -like '*bluray*.lib' } | Select-Object -First 1 }
+          if ($null -eq $bluray) { throw 'libbluray.lib not produced by vcpkg' }
+          Write-Host "lib: $($bluray.FullName)"
+          Copy-Item $bluray.FullName (Join-Path $env:GITHUB_WORKSPACE 'lib64\libbluray.lib') -Force
+          $dest = Join-Path $env:GITHUB_WORKSPACE '_bin\mpc-be_x64'
+          New-Item -ItemType Directory -Force -Path $dest | Out-Null
+          $dlls = Get-ChildItem -Path 'C:\vcpkg\installed\x64-windows\bin' -Filter '*.dll' -ErrorAction SilentlyContinue
+          $dlls | Copy-Item -Destination $dest -Force
+          Write-Host "dll count: $(@($dlls).Count)"
+
+      - name: Setup MSVC x64 developer environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build MPC-BE 1.9.3 + M1 reader
+        shell: cmd
+        run: |
+          echo @ECHO OFF > environments.bat
+          echo SET "MPCBE_MSYS=C:\mingw64" >> environments.bat
+          echo SET "MPCBE_MINGW=C:\mingw64" >> environments.bat
+          set PATH=%CD%;C:\mingw64\bin;D:\a\_temp\setup-msys2\mingw64\bin;D:\a\_temp\setup-msys2\usr\bin;%PATH%
+          where gcc
+          where nasm
+          call update_gcc.bat
+          if not exist lib64\libmingwex.a for /r C:\mingw64 %%f in (libmingwex.a) do copy /Y "%%~f" "lib64\"
+          if not exist lib64\libgcc.a for /r C:\mingw64 %%f in (libgcc.a) do copy /Y "%%~f" "lib64\"
+          if not exist lib64\libbluray.lib (echo ERROR: libbluray.lib missing & exit /b 1)
+          dir lib64\libbluray.lib
+          if not exist revision.h (
+            echo #pragma once > revision.h
+            echo #define REV_DATE "2026-11-23" >> revision.h
+            echo #define REV_BRANCH "bdmenu-m1" >> revision.h
+            echo #define REV_HASH "0" >> revision.h
+            echo #define REV_NUM 0 >> revision.h
+          )
+          msbuild mpc-be.sln /t:Build /p:Configuration=Release /p:Platform=x64 /p:AdditionalLibraryDirectories="%CD%\lib64;%CD%\_bin\lib\Release_x64" /m /v:minimal /nologo
+
+      - name: Package portable zip
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP 'green'
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          $exe = Get-ChildItem -Path '_bin' -Filter 'mpc-be64.exe' -Recurse | Select-Object -First 1
+          if ($null -eq $exe) { throw 'mpc-be64.exe not found' }
+          Copy-Item $exe.FullName $stage -Force
+          Get-ChildItem -Path '_bin' -Filter '*.dll' -Recurse | Copy-Item -Destination $stage -Force
+          foreach ($f in @('docs\MPC-BE-BDMenu-说明.txt')) { if (Test-Path $f) { Copy-Item $f $stage -Force } }
+          Compress-Archive -Path (Join-Path $stage '*') -DestinationPath 'MPC-BE-BDMenu-M1-x64.zip' -Force
+          Write-Host "package size: $((Get-Item 'MPC-BE-BDMenu-M1-x64.zip').Length) bytes"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: MPC-BE-BDMenu-M1-x64
+          path: MPC-BE-BDMenu-M1-x64.zip
