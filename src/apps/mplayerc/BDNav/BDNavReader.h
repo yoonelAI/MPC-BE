@@ -37,6 +37,7 @@ class CBDNavStream
 	ULONGLONG GetPacketsSize();
 	void CheckBuffer();
 	void EmptyBuffer();
+	void TruncateUnread();
 
 	DWORD ThreadProc() override;
 

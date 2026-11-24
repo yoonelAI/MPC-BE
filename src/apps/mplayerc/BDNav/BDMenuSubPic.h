@@ -7,6 +7,8 @@
 
 #include "SubPic/SubPicProviderImpl.h"
 
+#define BDMENU_WINDOW 800000LL   // 80 ms subpicture windows
+
 class CBDMenuSubPicProvider : public CSubPicProviderImpl
 {
 	CCritSec m_csLock;

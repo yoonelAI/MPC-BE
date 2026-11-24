@@ -130,8 +130,25 @@ CString BDNavGetDiscRoot(const CString& path)
 	return root;
 }
 
+static CCritSec g_csLog;
+
+void BDNavLogRaw(const char* utf8, size_t len)
+{
+	if (!utf8 || !len) {
+		return;
+	}
+	CAutoLock lock(&g_csLog);
+	const CString logfile = GetExeDir() + L"\\bdnav.log";
+	FILE* f = nullptr;
+	if (_wfopen_s(&f, logfile, L"ab") == 0 && f) {
+		fwrite(utf8, 1, len, f);
+		fclose(f);
+	}
+}
+
 void BDNavLog(const CString& line)
 {
+	CAutoLock lock(&g_csLog);
 	const CString logfile = GetExeDir() + L"\\bdnav.log";
 	FILE* f = nullptr;
 	if (_wfopen_s(&f, logfile, L"ab") == 0 && f) {

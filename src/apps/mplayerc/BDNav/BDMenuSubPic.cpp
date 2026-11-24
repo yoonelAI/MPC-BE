@@ -7,7 +7,8 @@
 #include "BDMenuSubPic.h"
 #include "BDNavigator.h"
 
-static const REFERENCE_TIME kMenuStop = 1LL << 60;
+// The menu is delivered as consecutive short windows so that a change only has to invalidate
+// the windows after the current one (no blank frame -> no flicker), see CMainFrame::BDNavUpdateMenu.
 
 CBDMenuSubPicProvider::CBDMenuSubPicProvider()
 	: CSubPicProviderImpl(&m_csLock)
@@ -16,22 +17,28 @@ CBDMenuSubPicProvider::CBDMenuSubPicProvider()
 
 STDMETHODIMP_(POSITION) CBDMenuSubPicProvider::GetStartPosition(REFERENCE_TIME rt, double fps, bool CleanOld)
 {
-	return CBDNavigator::Get().IsMenuVisible() ? (POSITION)1 : nullptr;
+	if (!CBDNavigator::Get().IsOverlayOn()) {
+		return nullptr;
+	}
+	if (rt < 0) {
+		rt = 0;
+	}
+	return (POSITION)(INT_PTR)(rt / BDMENU_WINDOW + 1);
 }
 
 STDMETHODIMP_(POSITION) CBDMenuSubPicProvider::GetNext(POSITION pos)
 {
-	return nullptr;
+	return (POSITION)((INT_PTR)pos + 1);
 }
 
 STDMETHODIMP_(REFERENCE_TIME) CBDMenuSubPicProvider::GetStart(POSITION pos, double fps)
 {
-	return 0;
+	return ((INT_PTR)pos - 1) * BDMENU_WINDOW;
 }
 
 STDMETHODIMP_(REFERENCE_TIME) CBDMenuSubPicProvider::GetStop(POSITION pos, double fps)
 {
-	return kMenuStop;
+	return (INT_PTR)pos * BDMENU_WINDOW;
 }
 
 STDMETHODIMP_(bool) CBDMenuSubPicProvider::IsAnimated(POSITION pos)

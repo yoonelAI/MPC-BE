@@ -9,7 +9,7 @@
 
 #define BDNAV_MAXSTORESIZE  (8 * MEGABYTE)   // buffered TS data before the reader thread waits
 #define BDNAV_KEEPBEHIND    (512 * KILOBYTE) // data kept behind the read position
-#define BDNAV_READSIZE      (188 * 1024)
+#define BDNAV_READSIZE      (6144 * 32)       // 32 aligned units = 1024 BD-TS packets
 
 //
 // CBDNavStream
@@ -86,6 +86,30 @@ void CBDNavStream::CheckBuffer()
 	}
 }
 
+void CBDNavStream::TruncateUnread()
+{
+	// drop data that was buffered but not read yet (old position after a user jump)
+	CAutoLock cAutoLock(&m_csLock);
+	CAutoLock cPacketLock(&m_csPacketsLock);
+
+	const ULONGLONG cut = ((m_pos + 191) / 192) * 192;
+	if (cut >= m_len) {
+		return;
+	}
+	const ULONGLONG dropped = m_len - cut;
+	while (!m_packets.empty() && m_packets.back().m_start >= cut) {
+		m_packets.pop_back();
+	}
+	if (!m_packets.empty() && m_packets.back().m_end > cut) {
+		m_packets.back().m_end = cut;
+	}
+	m_len = cut;
+
+	CString msg;
+	msg.Format(L"stream: dropped %.1f MB of buffered data after jump", dropped / 1048576.0);
+	BDNavLog(msg);
+}
+
 void CBDNavStream::EmptyBuffer()
 {
 	CAutoLock cPacketLock(&m_csPacketsLock);
@@ -129,6 +153,9 @@ DWORD CBDNavStream::ThreadProc()
 						m_bEndOfStream = TRUE;
 						m_EventComplete.Set();
 						break;
+					}
+					if (nav.TakeFlushRequest()) {
+						TruncateUnread();
 					}
 					if (n > 0) {
 						Append(buff.get(), (UINT)n);
@@ -301,7 +328,11 @@ STDMETHODIMP CBDNavReader::Load(LPCOLESTR pszFileName, const AM_MEDIA_TYPE* pmt)
 		return E_FAIL;
 	}
 
-	m_fn = pszFileName;
+	// virtual ...\BDMV\STREAM\<clip>.m2ts path: the MPEG splitter reads the clip info (stream types) next to it
+	m_fn = nav.PrepareClipInfoPath();
+	if (m_fn.IsEmpty()) {
+		m_fn = pszFileName;
+	}
 	m_mt.majortype = MEDIATYPE_Stream;
 	m_mt.subtype   = MEDIASUBTYPE_MPEG2_TRANSPORT;
 	return S_OK;
