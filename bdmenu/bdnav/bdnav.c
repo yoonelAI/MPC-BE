@@ -403,6 +403,20 @@ BDNAV_EXPORT int bdnav_get_playlist_info(BDNAV* nav, uint32_t playlist, BDNAV_TI
 	return 1;
 }
 
+BDNAV_EXPORT int bdnav_read_file(BDNAV* nav, const char* path, uint8_t* buf, int buflen)
+{
+	if (!nav || !path || !buf || buflen <= 0) return -1;
+	void* data = NULL;
+	int64_t size = 0;
+	if (!bd_read_file(nav->bd, path, &data, &size) || !data) {
+		return -1;
+	}
+	int n = size < (int64_t)buflen ? (int)size : buflen;
+	if (n > 0) memcpy(buf, data, (size_t)n);
+	free(data);
+	return n;
+}
+
 BDNAV_EXPORT int bdnav_lock_plane(BDNAV* nav, int plane, BDNAV_PLANE* out)
 {
 	if (!nav || plane < 0 || plane > 1 || !out) return 0;
