@@ -1137,6 +1137,36 @@ __int64 CMpegSplitterFilter::SeekBD(const REFERENCE_TIME rt)
 	return -1;
 }
 
+
+// BDMenu: the libbluray navigation source (CBDNavReader in mpc-be) reports a virtual
+// ...\BDMV\STREAM\<clip>.m2ts file name with the matching .clpi written next to it.
+static CString GetBDNavSourceFileName(IAsyncReader* pAsyncReader)
+{
+	static const GUID CLSID_BDNavReader = { 0x6b1c2a51, 0x8e1f, 0x4c55, { 0x9d, 0x2b, 0xbd, 0x0a, 0x7e, 0x11, 0xc0, 0xde } };
+
+	CString fn;
+	CComQIPtr<IPin> pPin = pAsyncReader;
+	if (!pPin) {
+		return fn;
+	}
+	PIN_INFO pi = {};
+	if (FAILED(pPin->QueryPinInfo(&pi)) || !pi.pFilter) {
+		return fn;
+	}
+	CLSID clsid = GUID_NULL;
+	if (SUCCEEDED(pi.pFilter->GetClassID(&clsid)) && clsid == CLSID_BDNavReader) {
+		if (CComQIPtr<IFileSourceFilter> pFSF = pi.pFilter) {
+			LPOLESTR name = nullptr;
+			if (SUCCEEDED(pFSF->GetCurFile(&name, nullptr)) && name) {
+				fn = name;
+				CoTaskMemFree(name);
+			}
+		}
+	}
+	pi.pFilter->Release();
+	return fn;
+}
+
 HRESULT CMpegSplitterFilter::CreateOutputs(IAsyncReader* pAsyncReader)
 {
 	CheckPointer(pAsyncReader, E_POINTER);
@@ -1146,7 +1176,16 @@ HRESULT CMpegSplitterFilter::CreateOutputs(IAsyncReader* pAsyncReader)
 	m_bIsBD = m_ClipInfo.IsHdmv();
 
 	if (!m_bIsBD) {
-		ReadClipInfo(GetPartFilename(pAsyncReader));
+		CString partName = GetPartFilename(pAsyncReader);
+		bool bBDNav = false;
+		if (partName.IsEmpty()) {
+			partName = GetBDNavSourceFileName(pAsyncReader); // BDMenu: Blu-ray navigation source
+			bBDNav = !partName.IsEmpty();
+		}
+		ReadClipInfo(partName);
+		if (bBDNav) {
+			m_bIsBD = m_ClipInfo.IsHdmv();
+		}
 	}
 
 	m_pFile.reset(DNew CMpegSplitterFile(pAsyncReader, hr, m_ClipInfo, m_bIsBD, m_ForcedSub, m_AC3CoreOnly, m_SubEmptyPin, m_bSupportMVCExtension));
