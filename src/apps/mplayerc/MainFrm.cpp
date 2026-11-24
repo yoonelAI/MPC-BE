@@ -46,6 +46,7 @@
 #include "FullscreenWnd.h"
 #include "TunerScanDlg.h"
 #include "UpdateChecker.h"
+#include "BDNav/BDNavLib.h"
 
 #include <ExtLib/BaseClasses/mtype.h>
 #include <Mpconfig.h>
@@ -17808,6 +17809,14 @@ BOOL CMainFrame::OpenCurPlaylistItem(REFERENCE_TIME rtStart/* = INVALID_TIME*/, 
 		if (!::PathIsURLW(pli.m_fi)) {
 			AfxGetAppSettings().strLastOpenFile = pli.m_fi.GetPath();
 		}
+		// BDMenu P1.1: libbluray probe (diagnostics only, playback path unchanged)
+		{
+			const CString fn = pli.m_fi.GetPath();
+			if (!::PathIsURLW(fn) && ((fn.GetLength() > 4 && fn.Right(4).CompareNoCase(L".iso") == 0) || IsBDStartFile(fn))) {
+				SendStatusMessage(BDNavProbe(fn), 8000);
+			}
+		}
+
 		if (OpenIso(pli.m_fi, rtStart) || OpenBD(pli.m_fi, rtStart, bAddRecent)) {
 			return TRUE;
 		}
