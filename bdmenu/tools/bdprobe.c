@@ -186,6 +186,10 @@ static char *w2u8(const wchar_t *w)
 
 static unsigned char g_buf[6144 * 32];
 static unsigned long long g_total;
+static int g_popup_avail = -1;   /* last BD_EVENT_POPUP param */
+static int g_title = -1;         /* last BD_EVENT_TITLE param */
+static unsigned long long g_title_at; /* bytes read when title started */
+static unsigned long long g_limit = 3000ull * 1048576;  /* per-phase read budget */
 
 /* pump the VM for ms milliseconds, logging events */
 static int pump(BLURAY *bd, DWORD ms, CTX *ctx)
@@ -199,9 +203,11 @@ static int pump(BLURAY *bd, DWORD ms, CTX *ctx)
         g_total += (unsigned)r;
         if (ev.event != BD_EVENT_NONE)
             printf("[ev] %-16s (%2u) param=%u  (read %.1f MB)\n", ev_name(ev.event), ev.event, ev.param, g_total / 1048576.0);
+        if (ev.event == BD_EVENT_POPUP) g_popup_avail = (int)ev.param;
+        if (ev.event == BD_EVENT_TITLE) { g_title = (int)ev.param; g_title_at = g_total; }
         if (r == 0 && ev.event == BD_EVENT_NONE) { if (++idle % 20 == 0) Sleep(5); }
         else idle = 0;
-        if (g_total > 6000ull * 1048576) { printf("read limit\n"); return -2; }
+        if (g_total > g_limit) { printf("read budget reached (%.0f MB)\n", g_total / 1048576.0); return -2; }
     }
     (void)ctx;
     return 0;
@@ -242,19 +248,45 @@ int wmain(int argc, wchar_t **argv)
     if (!bd_play(bd)) { printf("RESULT: FAIL bd_play\n"); bd_close(bd); return 3; }
     printf("bd_play ok\n");
 
-    /* phase 0: wait for menu (max 40 s, menu_call fallback at 15 s) */
-    DWORD t0 = GetTickCount(); int called = 0;
-    while (!ctx.menu_seen && GetTickCount() - t0 < 40000) {
-        if (pump(bd, 200, &ctx) < 0) break;
-        if (!called && GetTickCount() - t0 > 15000) {
-            printf("[nav] no menu after 15s -> bd_menu_call\n");
-            bd_menu_call(bd, -1); called = 1;
+    /* phase 0: let First Play run; then try (a) pop-up menu, (b) top menu */
+    DWORD t0 = GetTickCount();
+    int step = 0;             /* 0 = waiting first play, 1 = popup tried, 2 = top menu tried */
+    unsigned long long mark = 0;
+    while (!ctx.menu_seen && GetTickCount() - t0 < 60000) {
+        if (pump(bd, 150, &ctx) == -1) break;
+        if (ctx.menu_seen) break;
+        int in_title = g_title >= 1 && g_title != 65535;
+        if (step == 0 && in_title && g_total > g_title_at + 80ull * 1048576) {  /* let IG stream decode first */
+            if (g_popup_avail == 1) {
+                printf("[nav] title %d playing, pop-up menu available -> BD_VK_POPUP\n", g_title);
+                strcpy(ctx.tag, "popup"); ctx.save_enabled = 1;
+                bd_user_input(bd, -1, BD_VK_POPUP);
+            } else {
+                printf("[nav] title %d playing, no pop-up -> skip to top menu\n", g_title);
+            }
+            step = 1; mark = g_total; g_limit = g_total + 1500ull * 1048576;
+            continue;
         }
+        if (step == 1 && (g_total > mark + 400ull * 1048576 || g_limit - g_total < 50ull * 1048576)) {
+            printf("[nav] no menu yet -> bd_menu_call (top menu)\n");
+            strcpy(ctx.tag, "topmenu"); ctx.save_enabled = 1;
+            bd_menu_call(bd, -1);
+            step = 2; mark = g_total; g_limit = g_total + 1500ull * 1048576;
+            continue;
+        }
+        if (step == 0 && g_total > 2000ull * 1048576) {
+            printf("[nav] first play still running after 2 GB -> bd_menu_call\n");
+            strcpy(ctx.tag, "topmenu"); ctx.save_enabled = 1;
+            bd_menu_call(bd, -1); step = 2; mark = g_total; g_limit = g_total + 1500ull * 1048576;
+        }
+        if (step == 2 && g_total > g_limit - 10ull * 1048576) break;
     }
     if (!ctx.menu_seen) {
-        printf("IG flushes=%d PG flushes=%d\nRESULT: NO MENU captured\n", ctx.flushes[1], ctx.flushes[0]);
+        printf("IG flushes=%d PG flushes=%d popup_avail=%d title=%d\nRESULT: NO MENU captured\n",
+               ctx.flushes[1], ctx.flushes[0], g_popup_avail, g_title);
         bd_close(bd); return 4;
     }
+    g_limit = g_total + 4000ull * 1048576;
     printf("[nav] menu visible after %.1fs\n", (GetTickCount() - t0) / 1000.0);
     pump(bd, 1500, &ctx);
 
@@ -303,14 +335,15 @@ int wmain(int argc, wchar_t **argv)
         pump(bd, 300, &ctx);
         bd_user_input(bd, -1, BD_VK_MOUSE_ACTIVATE);
         unsigned long long before = g_total;
+        g_limit = g_total + 200ull * 1048576;
         strcpy(ctx.tag, "after_click"); ctx.save_enabled = 1;
         pump(bd, 6000, &ctx);
-        click_nav = g_total > before + 4 * 1048576;
+        click_nav = g_total > before + 4 * 1048576;  /* playback consumed data */
         printf("[mouse] after click read +%.1f MB\n", (g_total - before) / 1048576.0);
     }
 
-    printf("SUMMARY: menu=yes images=%d key_highlight_changes=%d/4 mouse_hover_hits=%d click_started_playback=%s\n",
-           ctx.saved, key_changes, hits, click_nav ? "yes" : "no");
+    printf("SUMMARY: menu=yes via=%s images=%d key_highlight_changes=%d/4 mouse_hover_hits=%d click_started_playback=%s\n",
+           step == 2 ? "top_menu" : (step == 1 ? "popup" : "first_play"), ctx.saved, key_changes, hits, click_nav ? "yes" : "no");
     printf("RESULT: OK menu captured\n");
     bd_close(bd);
     free(ctx.pl[0].px); free(ctx.pl[1].px); free(path);
