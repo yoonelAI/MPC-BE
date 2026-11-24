@@ -1,7 +1,6 @@
 name: BDMenu Build
 
-# P0: build vanilla MPC-BE 1.9.3 x64 portable exactly like upstream CI.
-# Only runs on branch bdmenu-qw (or manually).
+# MPC-BE 1.9.3 + BDMenu (bdnav.dll / libbluray). Branch bdmenu-qw only (or manual).
 on:
   workflow_dispatch:
   push:
@@ -11,6 +10,10 @@ on:
       - 'docs/**'
       - 'bdmenu/tools/**'
       - '.github/workflows/bdprobe.yml'
+
+concurrency:
+  group: bdmenu-main-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   build:
@@ -23,6 +26,41 @@ jobs:
         with:
           fetch-depth: 0
           submodules: recursive
+
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-bin
+          key: vcpkg-libbluray-x64-static-v1
+
+      - name: Install libbluray (static) via vcpkg
+        shell: pwsh
+        run: |
+          $env:VCPKG_DEFAULT_BINARY_CACHE = "$env:RUNNER_TEMP\vcpkg-bin"
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install libbluray:x64-windows-static
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Build bdnav.dll
+        shell: pwsh
+        run: |
+          $v = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static"
+          $libs = (Get-ChildItem "$v\lib" -Filter '*.lib' | ForEach-Object { '"' + $_.FullName + '"' }) -join ' '
+          $vs = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          New-Item -ItemType Directory -Force _bdnav | Out-Null
+          $cmd = @"
+          @echo off
+          call "$vs\Common7\Tools\VsDevCmd.bat" -arch=amd64 -no_logo
+          cd /d "$env:GITHUB_WORKSPACE"
+          cl /nologo /O2 /W3 /MT /utf-8 /DBDNAV_BUILD /I "$v\include" /I src\apps\mplayerc\BDNav bdmenu\bdnav\bdnav.c /LD /Fe_bdnav\bdnav.dll /Fo_bdnav\ /link $libs gdi32.lib user32.lib shell32.lib advapi32.lib bcrypt.lib ole32.lib ws2_32.lib
+          if errorlevel 1 exit /b 1
+          dumpbin /nologo /dependents _bdnav\bdnav.dll
+          dumpbin /nologo /exports _bdnav\bdnav.dll
+          "@
+          Set-Content -Path _bdnav\build.cmd -Value $cmd -Encoding ascii
+          cmd /c _bdnav\build.cmd
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          Get-Item _bdnav\bdnav.dll | Select-Object Name, Length
 
       - name: Prepare MSYS
         run: |
@@ -47,13 +85,17 @@ jobs:
           path: _bin/logs/**
           if-no-files-found: ignore
 
-      - name: Unpack portable to plain folder
+      - name: Assemble portable package
         shell: pwsh
         run: |
           $pkg = Get-ChildItem _bin/Packages -Recurse -Filter 'MPC-BE*.x64.7z' | Select-Object -First 1
           if (-not $pkg) { throw 'portable 7z not found' }
           7z x $pkg.FullName -o_dist -y | Out-Null
-          Get-ChildItem _dist -Recurse | Select-Object -First 40 FullName
+          $exe = Get-ChildItem _dist -Recurse -Filter 'mpc-be64.exe' | Select-Object -First 1
+          if (-not $exe) { throw 'mpc-be64.exe not found' }
+          Copy-Item _bdnav\bdnav.dll $exe.DirectoryName
+          if (Test-Path bdmenu\packaging) { Copy-Item bdmenu\packaging\* $exe.DirectoryName }
+          Get-ChildItem $exe.DirectoryName | Select-Object Name, Length
 
       - name: Upload portable x64 (zip)
         uses: actions/upload-artifact@v7

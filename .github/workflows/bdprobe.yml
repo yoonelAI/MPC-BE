@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [ bdmenu-qw ]
-    paths: [ 'bdmenu/**', '.github/workflows/bdprobe.yml' ]
+    paths: [ 'bdmenu/tools/**', '.github/workflows/bdprobe.yml' ]
 
 jobs:
   build:
