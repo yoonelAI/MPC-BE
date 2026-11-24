@@ -872,6 +872,7 @@ public:
 	afx_msg LRESULT OnResetDevice(WPARAM wParam, LPARAM lParam);
 
 	afx_msg LRESULT OnPostOpen(WPARAM wParam, LPARAM lParam);
+	afx_msg LRESULT OnBDNavNotify(WPARAM wParam, LPARAM lParam);
 
 	afx_msg void SaveAppSettings();
 
@@ -1326,6 +1327,17 @@ public:
 	BOOL IsDVDStartFile(const CString& path);
 	// DVD path can be supplemented with "VIDEO_TS.IFO" if necessary
 	BOOL CheckDVD(CString& path);
+
+	// BDMenu (libbluray navigation)
+	bool m_bBDNavActive = false;
+	bool m_bBDNavMenuShown = false;
+	bool m_bBDNavSkip = false;
+	CString m_strBDNavOrigPath;
+	CComPtr<ISubPicProvider> m_pBDMenuSubPic;
+	BOOL OpenBDNav(const CString& path, BOOL bAddRecent);
+	void BDNavUpdateMenu();
+	bool BDNavMouse(const CPoint& point, bool bClick);
+	bool BDNavKey(UINT vk);
 
 private:
 	int			GetStreamCount(DWORD dwSelGroup);

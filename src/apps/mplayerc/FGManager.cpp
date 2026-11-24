@@ -40,6 +40,7 @@
 #include <mvrInterfaces.h>
 #include "MediaFormats.h"
 #include "Content.h"
+#include "BDNav/BDNavReader.h"
 #include <filters/renderer/VideoRenderers/IPinHook.h>
 #include <IURLSourceFilterLAV.h>
 
@@ -1916,6 +1917,13 @@ CFGManagerCustom::CFGManagerCustom(LPCWSTR pName, LPUNKNOWN pUnk, HWND hWnd, boo
 	bool *audio = s.AudioFilters;
 
 	// Source filters
+
+	// BDMenu: libbluray navigation stream (marker file written by CBDNavigator)
+	if (!IsPreview) {
+		pFGF = DNew CFGFilterInternal<CBDNavReader>(BDNavReaderName);
+		pFGF->m_chkbytes.emplace_back(L"0,10,,42444E41562D4D504331"); // "BDNAV-MPC1"
+		m_source.emplace_back(pFGF);
+	}
 
 	if (src[SRC_SHOUTCAST] && !IsPreview) {
 		pFGF = DNew CFGFilterInternal<CShoutcastSource>(ShoutcastSourceName);

@@ -108,7 +108,10 @@
     <ClCompile Include="controls\StatusLabel.cpp" />
     <ClCompile Include="controls\WinHotkeyCtrl.cpp" />
     <ClCompile Include="CShockwaveFlash.cpp" />
+    <ClCompile Include="BDNav\BDMenuSubPic.cpp" />
+    <ClCompile Include="BDNav\BDNavigator.cpp" />
     <ClCompile Include="BDNav\BDNavLib.cpp" />
+    <ClCompile Include="BDNav\BDNavReader.cpp" />
     <ClCompile Include="DiskImage.cpp" />
     <ClCompile Include="FileDialogs.cpp" />
     <ClCompile Include="filters\ChaptersSouce.cpp" />
@@ -246,7 +249,10 @@
     <ClInclude Include="controls\WinHotkeyCtrl.h" />
     <ClInclude Include="CShockwaveFlash.h" />
     <ClInclude Include="DIB.h" />
+    <ClInclude Include="BDNav\BDMenuSubPic.h" />
+    <ClInclude Include="BDNav\BDNavigator.h" />
     <ClInclude Include="BDNav\BDNavLib.h" />
+    <ClInclude Include="BDNav\BDNavReader.h" />
     <ClInclude Include="BDNav\bdnav_api.h" />
     <ClInclude Include="DiskImage.h" />
     <ClInclude Include="FileDialogs.h" />

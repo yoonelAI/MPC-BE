@@ -46,7 +46,8 @@
 #include "FullscreenWnd.h"
 #include "TunerScanDlg.h"
 #include "UpdateChecker.h"
-#include "BDNav/BDNavLib.h"
+#include "BDNav/BDNavigator.h"
+#include "BDNav/BDMenuSubPic.h"
 
 #include <ExtLib/BaseClasses/mtype.h>
 #include <Mpconfig.h>
@@ -206,6 +207,7 @@ BEGIN_MESSAGE_MAP(CMainFrame, CFrameWnd)
 	ON_MESSAGE(WM_RESET_DEVICE, OnResetDevice)
 
 	ON_MESSAGE(WM_POSTOPEN, OnPostOpen)
+	ON_MESSAGE(WM_BDNAV_NOTIFY, OnBDNavNotify)
 
 	ON_MESSAGE_VOID(WM_SAVESETTINGS, SaveAppSettings)
 
@@ -1317,6 +1319,10 @@ BOOL CMainFrame::PreCreateWindow(CREATESTRUCT& cs)
 
 BOOL CMainFrame::PreTranslateMessage(MSG* pMsg)
 {
+	if (pMsg->message == WM_KEYDOWN && m_bBDNavActive && BDNavKey((UINT)pMsg->wParam)) {
+		return TRUE;
+	}
+
 	if (pMsg->message == WM_KEYDOWN) {
 		if (pMsg->wParam == VK_ESCAPE) {
 			const bool bEscapeNotAssigned = !AssignedKeyToCmd(VK_ESCAPE);
@@ -3655,6 +3661,16 @@ LRESULT CMainFrame::OnPostOpen(WPARAM wParam, LPARAM lParam)
 	m_wndPlaylistBar.curPlayList.m_nSelectedAudioTrack = m_wndPlaylistBar.curPlayList.m_nSelectedSubtitleTrack = -1;
 	m_bRememberSelectedTracks = true;
 
+	if (!m_closingmsg.IsEmpty() && m_bBDNavActive) {
+		// BDMenu: navigation graph could not be built -> original Blu-ray playback
+		BDNavLog(L"graph build failed in navigation mode (" + m_closingmsg + L"), falling back to direct playback");
+		m_closingmsg.Empty();
+		CloseMedia();
+		m_bBDNavSkip = true;
+		OpenCurPlaylistItem(INVALID_TIME, FALSE);
+		return true;
+	}
+
 	if (!m_closingmsg.IsEmpty()) {
 		CString aborted(ResStr(IDS_AG_ABORTED));
 
@@ -3829,6 +3845,10 @@ void CMainFrame::OnLButtonDown(UINT nFlags, CPoint point)
 	}
 
 	SetFocus();
+
+	if (m_bBDNavActive && m_bBDNavMenuShown && BDNavMouse(point, true)) {
+		return;
+	}
 
 	if (GetPlaybackMode() == PM_DVD) {
 		CRect vid_rect = m_wndView.GetVideoRect();
@@ -4037,6 +4057,10 @@ void CMainFrame::OnMouseMove(UINT nFlags, CPoint point)
 	if (m_lastMouseMove.x == -1 && m_lastMouseMove.y == -1) {
 		m_lastMouseMove.x = point.x;
 		m_lastMouseMove.y = point.y;
+	}
+
+	if (m_bBDNavActive && m_bBDNavMenuShown) {
+		BDNavMouse(point, false);
 	}
 
 	const CAppSettings& s = AfxGetAppSettings();
@@ -9964,6 +9988,17 @@ void CMainFrame::OnNavigateMenu(UINT nID)
 {
 	nID -= ID_NAVIGATE_TITLEMENU;
 
+	if (m_bBDNavActive) {
+		if (m_eMediaLoadState == MLS_LOADED) {
+			if (nID == 0) {
+				CBDNavigator::Get().Popup();
+			} else {
+				CBDNavigator::Get().MenuCall();
+			}
+		}
+		return;
+	}
+
 	if (m_eMediaLoadState != MLS_LOADED || GetPlaybackMode() != PM_DVD) {
 		return;
 	}
@@ -9981,6 +10016,11 @@ void CMainFrame::OnUpdateNavigateMenu(CCmdUI* pCmdUI)
 {
 	UINT nID = pCmdUI->m_nID - ID_NAVIGATE_TITLEMENU;
 	ULONG ulUOPs;
+
+	if (m_bBDNavActive) {
+		pCmdUI->Enable(m_eMediaLoadState == MLS_LOADED && nID <= 1);
+		return;
+	}
 
 	if (m_eMediaLoadState != MLS_LOADED || GetPlaybackMode() != PM_DVD
 			|| FAILED(m_pDVDI->GetCurrentUOPS(&ulUOPs))) {
@@ -10308,6 +10348,19 @@ void CMainFrame::OnNavigateChapters(UINT nID)
 
 void CMainFrame::OnNavigateMenuItem(UINT nID)
 {
+	if (m_bBDNavActive) {
+		auto& nav = CBDNavigator::Get();
+		switch (nID) {
+			case ID_NAVIGATE_MENU_LEFT:     nav.Key(BDNAV_KEY_LEFT);  break;
+			case ID_NAVIGATE_MENU_RIGHT:    nav.Key(BDNAV_KEY_RIGHT); break;
+			case ID_NAVIGATE_MENU_UP:       nav.Key(BDNAV_KEY_UP);    break;
+			case ID_NAVIGATE_MENU_DOWN:     nav.Key(BDNAV_KEY_DOWN);  break;
+			case ID_NAVIGATE_MENU_ACTIVATE: nav.Key(BDNAV_KEY_ENTER); break;
+			default: break;
+		}
+		return;
+	}
+
 	if (GetPlaybackMode() == PM_DVD) {
 		switch (nID) {
 			case ID_NAVIGATE_MENU_LEFT:
@@ -10343,7 +10396,7 @@ void CMainFrame::OnNavigateMenuItem(UINT nID)
 
 void CMainFrame::OnUpdateNavigateMenuItem(CCmdUI* pCmdUI)
 {
-	pCmdUI->Enable(m_eMediaLoadState == MLS_LOADED && GetPlaybackMode() == PM_DVD);
+	pCmdUI->Enable(m_eMediaLoadState == MLS_LOADED && (GetPlaybackMode() == PM_DVD || m_bBDNavActive));
 }
 
 void CMainFrame::OnTunerScan()
@@ -14877,6 +14930,14 @@ void CMainFrame::CloseMediaPrivate()
 	m_iDVDTitleForHistory = 0;
 	m_bDVDStillOn = false;
 
+	// BDMenu
+	if (m_bBDNavActive || CBDNavigator::Get().IsOpen()) {
+		CBDNavigator::Get().Close();
+	}
+	m_bBDNavActive = false;
+	m_bBDNavMenuShown = false;
+	m_pBDMenuSubPic.Release();
+
 	DLog(L"CMainFrame::CloseMediaPrivate() : end");
 }
 
@@ -17809,13 +17870,11 @@ BOOL CMainFrame::OpenCurPlaylistItem(REFERENCE_TIME rtStart/* = INVALID_TIME*/, 
 		if (!::PathIsURLW(pli.m_fi)) {
 			AfxGetAppSettings().strLastOpenFile = pli.m_fi.GetPath();
 		}
-		// BDMenu P1.1: libbluray probe (diagnostics only, playback path unchanged)
-		{
-			const CString fn = pli.m_fi.GetPath();
-			if (!::PathIsURLW(fn) && ((fn.GetLength() > 4 && fn.Right(4).CompareNoCase(L".iso") == 0) || IsBDStartFile(fn))) {
-				SendStatusMessage(BDNavProbe(fn), 8000);
-			}
+		// BDMenu: Blu-ray navigation (menus) first, original playback as fallback
+		if (!m_bBDNavSkip && OpenBDNav(pli.m_fi.GetPath(), bAddRecent)) {
+			return TRUE;
 		}
+		m_bBDNavSkip = false;
 
 		if (OpenIso(pli.m_fi, rtStart) || OpenBD(pli.m_fi, rtStart, bAddRecent)) {
 			return TRUE;
@@ -21229,3 +21288,132 @@ void CMainFrame::Stop()
 	m_CMediaControls.UpdateButtons();
 }
 
+
+
+// ---------------------------------------------------------------------------
+// BDMenu: Blu-ray menu navigation (libbluray via bdnav.dll)
+// ---------------------------------------------------------------------------
+
+BOOL CMainFrame::OpenBDNav(const CString& path, BOOL bAddRecent)
+{
+	if (path.IsEmpty() || ::PathIsURLW(path)) {
+		return FALSE;
+	}
+
+	CString fn(path);
+	const bool bIso = fn.GetLength() > 4 && fn.Right(4).CompareNoCase(L".iso") == 0;
+	bool bBD = !!IsBDStartFile(fn);
+	if (!bIso && !bBD && ::PathIsDirectoryW(fn)) {
+		CString t(fn);
+		t.TrimRight(L'\\');
+		bBD = ::PathFileExistsW(t + L"\\BDMV\\index.bdmv")
+			|| (t.GetLength() > 5 && t.Right(5).CompareNoCase(L"\\BDMV") == 0 && ::PathFileExistsW(t + L"\\index.bdmv"));
+	}
+	if (!bIso && !bBD) {
+		return FALSE;
+	}
+	if (bIso && !::PathFileExistsW(fn)) {
+		return FALSE;
+	}
+
+	SendMessageW(WM_COMMAND, ID_FILE_CLOSEMEDIA);
+
+	auto& nav = CBDNavigator::Get();
+	CString err;
+	if (!nav.Open(fn, m_hWnd, err)) {
+		BDNavLog(L"navigation not used (" + err + L"): " + fn);
+		SendStatusMessage(L"BD menu: " + err, 5000);
+		return FALSE;
+	}
+
+	m_bBDNavActive = true;
+	m_bBDNavMenuShown = false;
+	m_strBDNavOrigPath = fn;
+
+	if (bAddRecent) {
+		AddRecent(fn);
+	}
+
+	if (OpenFile(nav.GetMarkerPath(), INVALID_TIME, FALSE)) {
+		return TRUE;
+	}
+
+	nav.Close();
+	m_bBDNavActive = false;
+	return FALSE;
+}
+
+LRESULT CMainFrame::OnBDNavNotify(WPARAM wParam, LPARAM lParam)
+{
+	CBDNavigator::Get().NotifyHandled();
+	if (m_bBDNavActive) {
+		BDNavUpdateMenu();
+	}
+	return 0;
+}
+
+void CMainFrame::BDNavUpdateMenu()
+{
+	if (!m_pCAP) {
+		return;
+	}
+
+	if (CBDNavigator::Get().IsMenuVisible()) {
+		if (!m_pBDMenuSubPic) {
+			m_pBDMenuSubPic = (ISubPicProvider*)DNew CBDMenuSubPicProvider();
+		}
+		m_bBDNavMenuShown = true;
+		m_pCAP->SetSubPicProvider(m_pBDMenuSubPic);
+		m_pCAP->Invalidate();
+	} else if (m_bBDNavMenuShown) {
+		m_bBDNavMenuShown = false;
+		CComQIPtr<ISubPicProvider> pSPP;
+		if (m_pCurrentSubStream && !(m_iSubtitleSel & 0x80000000)) {
+			pSPP = m_pCurrentSubStream.p;
+		}
+		m_pCAP->SetSubPicProvider(pSPP);
+		m_pCAP->Invalidate();
+	}
+}
+
+bool CMainFrame::BDNavMouse(const CPoint& point, bool bClick)
+{
+	CRect vr = m_wndView.GetVideoRect();
+	m_wndView.MapWindowPoints(this, &vr);
+	if (vr.IsRectEmpty() || !vr.PtInRect(point)) {
+		return false;
+	}
+	return CBDNavigator::Get().Mouse(point.x - vr.left, point.y - vr.top, vr.Width(), vr.Height(), bClick);
+}
+
+bool CMainFrame::BDNavKey(UINT vk)
+{
+	if (m_eMediaLoadState != MLS_LOADED) {
+		return false;
+	}
+
+	auto& nav = CBDNavigator::Get();
+	const bool ctrl  = (::GetKeyState(VK_CONTROL) & 0x8000) != 0;
+	const bool shift = (::GetKeyState(VK_SHIFT) & 0x8000) != 0;
+
+	if (ctrl && !shift && vk == 'M') {
+		nav.Popup();
+		return true;
+	}
+	if (!ctrl && !shift && vk == VK_HOME) {
+		nav.MenuCall();
+		return true;
+	}
+	if (!m_bBDNavMenuShown || ctrl || shift) {
+		return false;
+	}
+
+	switch (vk) {
+		case VK_UP:     nav.Key(BDNAV_KEY_UP);    return true;
+		case VK_DOWN:   nav.Key(BDNAV_KEY_DOWN);  return true;
+		case VK_LEFT:   nav.Key(BDNAV_KEY_LEFT);  return true;
+		case VK_RIGHT:  nav.Key(BDNAV_KEY_RIGHT); return true;
+		case VK_RETURN: nav.Key(BDNAV_KEY_ENTER); return true;
+		default:        return false;
+	}
+}
