@@ -23,7 +23,7 @@
 #include "bdnav_api.h"
 
 /* compile-time check: BDNAV_EV_* must equal BD_EVENT_* */
-#define BDNAV_CHECK(name, a, b) typedef char name[((a) == (b)) ? 1 : -1]
+#define BDNAV_CHECK(name, a, b) typedef char name[((int)(a) == (int)(b)) ? 1 : -1]
 BDNAV_CHECK(chk_ev_title,    BD_EVENT_TITLE,           BDNAV_EV_TITLE);
 BDNAV_CHECK(chk_ev_playlist, BD_EVENT_PLAYLIST,        BDNAV_EV_PLAYLIST);
 BDNAV_CHECK(chk_ev_eot,      BD_EVENT_END_OF_TITLE,    BDNAV_EV_END_OF_TITLE);
@@ -352,10 +352,12 @@ static uint32_t map_key(uint32_t k)
 	case BDNAV_KEY_RIGHT:          return BD_VK_RIGHT;
 	case BDNAV_KEY_ENTER:          return BD_VK_ENTER;
 	case BDNAV_KEY_MOUSE_ACTIVATE: return BD_VK_MOUSE_ACTIVATE;
-	case BDNAV_KEY_RED:            return BD_VK_RED;
-	case BDNAV_KEY_GREEN:          return BD_VK_GREEN;
-	case BDNAV_KEY_YELLOW:         return BD_VK_YELLOW;
-	case BDNAV_KEY_BLUE:           return BD_VK_BLUE;
+	/* colour keys: numeric values from the BD-ROM spec (VK_COLORED_KEY_0..3);
+	   libbluray headers do not name all of them consistently */
+	case BDNAV_KEY_RED:            return 403;
+	case BDNAV_KEY_GREEN:          return 404;
+	case BDNAV_KEY_YELLOW:         return 405;
+	case BDNAV_KEY_BLUE:           return 406;
 	default:                       return BD_VK_NONE;
 	}
 }
