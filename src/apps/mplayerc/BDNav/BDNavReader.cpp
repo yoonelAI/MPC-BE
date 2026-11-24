@@ -271,6 +271,10 @@ STDMETHODIMP CBDNavReader::Stop()
 
 STDMETHODIMP CBDNavReader::Pause()
 {
+	// the splitter prerolls in paused state: keep the navigation stream flowing
+	if (m_stream.ThreadExists()) {
+		m_stream.CallWorker(CBDNavStream::CMD_RUN);
+	}
 	return S_OK;
 }
 
