@@ -62,6 +62,12 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           Get-Item _bdnav\bdnav.dll | Select-Object Name, Length
 
+      - name: Upload bdnav.dll
+        uses: actions/upload-artifact@v7
+        with:
+          name: bdnav-dll
+          path: _bdnav/bdnav.dll
+
       - name: Prepare MSYS
         run: |
           curl -sSL https://github.com/Aleksoid1978/MSYS/raw/main/MSYS_MinGW-w64_GCC_1521_x86-x64.7z -o MSYS.7z
