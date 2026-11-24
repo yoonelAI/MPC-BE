@@ -41,7 +41,7 @@ BDNAV_CHECK(chk_ev_uo,       BD_EVENT_UO_MASK_CHANGED, BDNAV_EV_UO_MASK_CHANGED)
 /* ---------------- libbluray log capture ---------------- */
 
 static CRITICAL_SECTION g_log_cs;
-static char   g_log[8192];
+static char   g_log[65536];
 static size_t g_log_len;
 
 static void log_cb(const char* msg)
@@ -69,6 +69,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved)
 		InitializeCriticalSection(&g_log_cs);
 		DisableThreadLibraryCalls(hinst);
 		bd_set_debug_handler(log_cb);
+		bd_set_debug_mask(DBG_CRIT | DBG_HDMV | DBG_GC | DBG_NAV | DBG_BLURAY);
 	} else if (reason == DLL_PROCESS_DETACH) {
 		bd_set_debug_handler(NULL);
 		DeleteCriticalSection(&g_log_cs);
@@ -399,6 +400,51 @@ BDNAV_EXPORT int bdnav_get_playlist_info(BDNAV* nav, uint32_t playlist, BDNAV_TI
 	info->angle_count   = ti->angle_count;
 	info->chapter_count = ti->chapter_count;
 	info->mark_count    = ti->mark_count;
+	bd_free_title_info(ti);
+	return 1;
+}
+
+static const char* coding_name(uint8_t t)
+{
+	switch (t) {
+	case 0x01: return "MPEG1";   case 0x02: return "MPEG2";  case 0x1b: return "H264";
+	case 0x20: return "MVC";     case 0x24: return "HEVC";   case 0xea: return "VC1";
+	case 0x03: return "MP1A";    case 0x04: return "MP2A";
+	case 0x80: return "LPCM";    case 0x81: return "AC3";    case 0x82: return "DTS";
+	case 0x83: return "TrueHD";  case 0x84: return "AC3+";   case 0x85: return "DTS-HD";
+	case 0x86: return "DTS-HDMA";case 0xa1: return "AC3+sec";case 0xa2: return "DTS-HDsec";
+	case 0x90: return "PGS";     case 0x91: return "IGS";    case 0x92: return "TextST";
+	default:   return "?";
+	}
+}
+
+BDNAV_EXPORT int bdnav_get_clip_info(BDNAV* nav, uint32_t playlist, uint32_t item, char* clip_id, int idlen, char* desc, int desclen)
+{
+	if (clip_id && idlen > 0) clip_id[0] = 0;
+	if (desc && desclen > 0) desc[0] = 0;
+	if (!nav) return 0;
+	BLURAY_TITLE_INFO* ti = bd_get_playlist_info(nav->bd, playlist, 0);
+	if (!ti) return 0;
+	if (item >= ti->clip_count) { bd_free_title_info(ti); return 0; }
+	const BLURAY_CLIP_INFO* ci = &ti->clips[item];
+	if (clip_id && idlen > 0) {
+		char id[6]; memcpy(id, ci->clip_id, 5); id[5] = 0;
+		copy_str(clip_id, (size_t)idlen, id);
+	}
+	if (desc && desclen > 0) {
+		size_t n = 0;
+		int k;
+		n += _snprintf(desc + n, desclen - 1 - n, "V:");
+		for (k = 0; k < ci->video_stream_count && n < (size_t)desclen - 64; k++)
+			n += _snprintf(desc + n, desclen - 1 - n, " %04x=%s", ci->video_streams[k].pid, coding_name(ci->video_streams[k].coding_type));
+		n += _snprintf(desc + n, desclen - 1 - n, " A:");
+		for (k = 0; k < ci->audio_stream_count && n < (size_t)desclen - 64; k++)
+			n += _snprintf(desc + n, desclen - 1 - n, " %04x=%s/f%u/r%u/%.3s", ci->audio_streams[k].pid,
+				coding_name(ci->audio_streams[k].coding_type), ci->audio_streams[k].format, ci->audio_streams[k].rate,
+				(const char*)ci->audio_streams[k].lang);
+		n += _snprintf(desc + n, desclen - 1 - n, " PG:%u IG:%u", ci->pg_stream_count, ci->ig_stream_count);
+		desc[desclen - 1] = 0;
+	}
 	bd_free_title_info(ti);
 	return 1;
 }
