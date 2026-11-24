@@ -1,10 +1,10 @@
 /*
- * bdprobe.c - MPC-BE BDMenu P0 probe
- * Opens a Blu-ray (BDMV folder / disc / ISO), runs the HDMV navigation VM
- * via libbluray, captures IG (menu) overlay planes to BMP files and logs
- * navigation events. Also injects DOWN / RIGHT keys to verify highlight.
+ * bdprobe.c - MPC-BE BDMenu P0 probe (v4)
+ * Opens a Blu-ray (BDMV folder or ISO), runs the HDMV navigation VM via
+ * libbluray, captures IG (menu) overlay planes to BMP, tests keyboard and
+ * mouse navigation (bd_mouse_select / MOUSE_ACTIVATE) and logs events.
  *
- * usage: bdprobe <disc path> <output dir> [region bitmask: A=1 B=2 C=4]
+ * usage: bdprobe <disc path or .iso> <output dir> [region A=1 B=2 C=4]
  * License: GPLv3 (same as MPC-BE)
  */
 #define _CRT_SECURE_NO_WARNINGS
@@ -20,17 +20,17 @@
 #include <libbluray/overlay.h>
 #include <libbluray/keys.h>
 
-typedef struct {
-    int w, h;
-    uint32_t *px;      /* ARGB */
-} PLANE;
+typedef struct { int w, h; uint32_t *px; } PLANE;
 
 typedef struct {
-    PLANE pl[2];       /* 0 = PG, 1 = IG */
+    PLANE pl[2];
     int flushes[2];
     int saved;
-    int new_save;
+    int menu_seen;
+    int save_enabled;
     const wchar_t *outdir;
+    char tag[32];
+    int minx, miny, maxx, maxy;   /* bbox of visible IG pixels at last flush */
 } CTX;
 
 static uint32_t ycc2argb(const BD_PG_PALETTE_ENTRY *e)
@@ -38,9 +38,7 @@ static uint32_t ycc2argb(const BD_PG_PALETTE_ENTRY *e)
     double Y  = (e->Y  - 16)  * 255.0 / 219.0;
     double Cb = (e->Cb - 128) * 255.0 / 224.0;
     double Cr = (e->Cr - 128) * 255.0 / 224.0;
-    double r = Y + 1.5748 * Cr;
-    double g = Y - 0.1873 * Cb - 0.4681 * Cr;
-    double b = Y + 1.8556 * Cb;
+    double r = Y + 1.5748 * Cr, g = Y - 0.1873 * Cb - 0.4681 * Cr, b = Y + 1.8556 * Cb;
     int R = r < 0 ? 0 : r > 255 ? 255 : (int)(r + 0.5);
     int G = g < 0 ? 0 : g > 255 ? 255 : (int)(g + 0.5);
     int B = b < 0 ? 0 : b > 255 ? 255 : (int)(b + 0.5);
@@ -55,30 +53,22 @@ static int save_bmp(const wchar_t *path, const PLANE *p)
     uint32_t datasz = (uint32_t)stride * p->h;
     uint8_t hdr[54] = {0};
     hdr[0] = 'B'; hdr[1] = 'M';
-    *(uint32_t *)(hdr + 2)  = 54 + datasz;
-    *(uint32_t *)(hdr + 10) = 54;
-    *(uint32_t *)(hdr + 14) = 40;
-    *(int32_t  *)(hdr + 18) = p->w;
-    *(int32_t  *)(hdr + 22) = p->h;      /* bottom-up */
-    *(uint16_t *)(hdr + 26) = 1;
-    *(uint16_t *)(hdr + 28) = 24;
-    *(uint32_t *)(hdr + 34) = datasz;
+    *(uint32_t *)(hdr + 2) = 54 + datasz; *(uint32_t *)(hdr + 10) = 54;
+    *(uint32_t *)(hdr + 14) = 40; *(int32_t *)(hdr + 18) = p->w; *(int32_t *)(hdr + 22) = p->h;
+    *(uint16_t *)(hdr + 26) = 1; *(uint16_t *)(hdr + 28) = 24; *(uint32_t *)(hdr + 34) = datasz;
     fwrite(hdr, 1, 54, f);
     uint8_t *row = (uint8_t *)calloc(stride, 1);
     for (int y = p->h - 1; y >= 0; y--) {
         for (int x = 0; x < p->w; x++) {
             uint32_t c = p->px[(size_t)y * p->w + x];
-            unsigned a = c >> 24;
-            /* composite over dark grey so transparent areas are visible */
-            unsigned bg = 0x30;
-            row[x * 3 + 0] = (uint8_t)(((c       & 0xff) * a + bg * (255 - a)) / 255);
+            unsigned a = c >> 24, bg = 0x30;
+            row[x * 3 + 0] = (uint8_t)(((c & 0xff) * a + bg * (255 - a)) / 255);
             row[x * 3 + 1] = (uint8_t)((((c >> 8) & 0xff) * a + bg * (255 - a)) / 255);
             row[x * 3 + 2] = (uint8_t)((((c >> 16) & 0xff) * a + bg * (255 - a)) / 255);
         }
         fwrite(row, 1, stride, f);
     }
-    free(row);
-    fclose(f);
+    free(row); fclose(f);
     return 1;
 }
 
@@ -89,13 +79,11 @@ static void overlay_cb(void *handle, const BD_OVERLAY *const ov)
     if (ov->plane > 1) return;
     PLANE *pl = &c->pl[ov->plane];
     const char *pn = ov->plane == BD_OVERLAY_IG ? "IG" : "PG";
-
     switch (ov->cmd) {
     case BD_OVERLAY_INIT:
-        free(pl->px);
-        pl->w = ov->w; pl->h = ov->h;
+        free(pl->px); pl->w = ov->w; pl->h = ov->h;
         pl->px = (uint32_t *)calloc((size_t)ov->w * ov->h, 4);
-        printf("[ov] %s INIT %dx%d at %d,%d\n", pn, ov->w, ov->h, ov->x, ov->y);
+        printf("[ov] %s INIT %dx%d\n", pn, ov->w, ov->h);
         break;
     case BD_OVERLAY_CLOSE:
         free(pl->px); pl->px = NULL; pl->w = pl->h = 0;
@@ -108,11 +96,10 @@ static void overlay_cb(void *handle, const BD_OVERLAY *const ov)
         printf("[ov] %s HIDE\n", pn);
         break;
     case BD_OVERLAY_WIPE:
-        if (pl->px) {
+        if (pl->px)
             for (int y = ov->y; y < ov->y + ov->h && y < pl->h; y++)
                 for (int x = ov->x; x < ov->x + ov->w && x < pl->w; x++)
                     if (x >= 0 && y >= 0) pl->px[(size_t)y * pl->w + x] = 0;
-        }
         break;
     case BD_OVERLAY_DRAW: {
         if (!pl->px || !ov->img || !ov->palette) break;
@@ -122,68 +109,69 @@ static void overlay_cb(void *handle, const BD_OVERLAY *const ov)
         for (int y = 0; y < ov->h; y++) {
             int x = 0;
             while (x < ov->w) {
-                if (r->len == 0) { r++; break; }       /* end of line */
+                if (r->len == 0) { r++; break; }
                 int py = ov->y + y;
                 for (int k = 0; k < r->len && x + k < ov->w; k++) {
                     int px = ov->x + x + k;
                     if (px >= 0 && px < pl->w && py >= 0 && py < pl->h)
                         pl->px[(size_t)py * pl->w + px] = pal[r->color & 0xff];
                 }
-                x += r->len;
-                r++;
+                x += r->len; r++;
             }
-            if (x >= ov->w && r->len == 0) r++;       /* consume EOL marker */
+            if (x >= ov->w && r->len == 0) r++;
         }
         break;
     }
     case BD_OVERLAY_FLUSH: {
         c->flushes[ov->plane]++;
-        if (!pl->px) break;
-        size_t n = (size_t)pl->w * pl->h, vis = 0;
-        for (size_t i = 0; i < n; i++) if (pl->px[i] >> 24) vis++;
-        printf("[ov] %s FLUSH #%d visible_px=%zu\n", pn, c->flushes[ov->plane], vis);
-        if (ov->plane == BD_OVERLAY_IG && vis > 0 && c->saved < 12) {
-            wchar_t path[MAX_PATH];
-            swprintf(path, MAX_PATH, L"%ls\\menu_%02d.bmp", c->outdir, c->saved);
-            if (save_bmp(path, pl)) {
-                printf("[ov] saved menu_%02d.bmp\n", c->saved);
-                c->saved++;
-                c->new_save = 1;
+        if (!pl->px || ov->plane != BD_OVERLAY_IG) break;
+        size_t vis = 0; int x0 = pl->w, y0 = pl->h, x1 = -1, y1 = -1;
+        for (int y = 0; y < pl->h; y++)
+            for (int x = 0; x < pl->w; x++)
+                if (pl->px[(size_t)y * pl->w + x] >> 24) {
+                    vis++;
+                    if (x < x0) x0 = x; if (x > x1) x1 = x;
+                    if (y < y0) y0 = y; if (y > y1) y1 = y;
+                }
+        c->minx = x0; c->miny = y0; c->maxx = x1; c->maxy = y1;
+        printf("[ov] IG FLUSH #%d visible_px=%zu bbox=(%d,%d)-(%d,%d)\n", c->flushes[1], vis, x0, y0, x1, y1);
+        if (vis > 0) {
+            c->menu_seen = 1;
+            if (c->save_enabled && c->saved < 24) {
+                wchar_t path[MAX_PATH];
+                swprintf(path, MAX_PATH, L"%ls\\menu_%02d_%hs.bmp", c->outdir, c->saved, c->tag);
+                if (save_bmp(path, pl)) { printf("[ov] saved menu_%02d_%s.bmp\n", c->saved, c->tag); c->saved++; }
+                c->save_enabled = 0;   /* one image per step */
             }
         }
         break;
     }
-    default:
-        printf("[ov] %s cmd=%d\n", pn, ov->cmd);
+    default: break;
     }
 }
 
 static const char *ev_name(uint32_t e)
 {
     switch (e) {
-    case BD_EVENT_NONE: return "NONE";
-    case BD_EVENT_ERROR: return "ERROR";
-    case BD_EVENT_READ_ERROR: return "READ_ERROR";
-    case BD_EVENT_ENCRYPTED: return "ENCRYPTED";
-    case BD_EVENT_ANGLE: return "ANGLE";
-    case BD_EVENT_TITLE: return "TITLE";
-    case BD_EVENT_PLAYLIST: return "PLAYLIST";
-    case BD_EVENT_PLAYITEM: return "PLAYITEM";
-    case BD_EVENT_CHAPTER: return "CHAPTER";
-    case BD_EVENT_PLAYMARK: return "PLAYMARK";
-    case BD_EVENT_END_OF_TITLE: return "END_OF_TITLE";
-    case BD_EVENT_AUDIO_STREAM: return "AUDIO_STREAM";
-    case BD_EVENT_IG_STREAM: return "IG_STREAM";
-    case BD_EVENT_PG_TEXTST_STREAM: return "PG_TEXTST_STREAM";
-    case BD_EVENT_PG_TEXTST: return "PG_TEXTST";
-    case BD_EVENT_SEEK: return "SEEK";
-    case BD_EVENT_STILL: return "STILL";
-    case BD_EVENT_STILL_TIME: return "STILL_TIME";
-    case BD_EVENT_SOUND_EFFECT: return "SOUND_EFFECT";
-    case BD_EVENT_IDLE: return "IDLE";
-    case BD_EVENT_POPUP: return "POPUP";
-    case BD_EVENT_MENU: return "MENU";
-    case BD_EVENT_DISCONTINUITY: return "DISCONTINUITY";
+    case BD_EVENT_NONE: return "NONE"; case BD_EVENT_ERROR: return "ERROR";
+    case BD_EVENT_READ_ERROR: return "READ_ERROR"; case BD_EVENT_ENCRYPTED: return "ENCRYPTED";
+    case BD_EVENT_ANGLE: return "ANGLE"; case BD_EVENT_TITLE: return "TITLE";
+    case BD_EVENT_PLAYLIST: return "PLAYLIST"; case BD_EVENT_PLAYITEM: return "PLAYITEM";
+    case BD_EVENT_CHAPTER: return "CHAPTER"; case BD_EVENT_PLAYMARK: return "PLAYMARK";
+    case BD_EVENT_END_OF_TITLE: return "END_OF_TITLE"; case BD_EVENT_AUDIO_STREAM: return "AUDIO_STREAM";
+    case BD_EVENT_IG_STREAM: return "IG_STREAM"; case BD_EVENT_PG_TEXTST_STREAM: return "PG_TEXTST_STREAM";
+    case BD_EVENT_PIP_PG_TEXTST_STREAM: return "PIP_PG_STREAM";
+    case BD_EVENT_SECONDARY_AUDIO_STREAM: return "SEC_AUDIO_STREAM";
+    case BD_EVENT_SECONDARY_VIDEO_STREAM: return "SEC_VIDEO_STREAM";
+    case BD_EVENT_PG_TEXTST: return "PG_TEXTST"; case BD_EVENT_PIP_PG_TEXTST: return "PIP_PG_TEXTST";
+    case BD_EVENT_SECONDARY_AUDIO: return "SEC_AUDIO"; case BD_EVENT_SECONDARY_VIDEO: return "SEC_VIDEO";
+    case BD_EVENT_SECONDARY_VIDEO_SIZE: return "SEC_VIDEO_SIZE"; case BD_EVENT_PLAYLIST_STOP: return "PLAYLIST_STOP";
+    case BD_EVENT_DISCONTINUITY: return "DISCONTINUITY"; case BD_EVENT_SEEK: return "SEEK";
+    case BD_EVENT_STILL: return "STILL"; case BD_EVENT_STILL_TIME: return "STILL_TIME";
+    case BD_EVENT_SOUND_EFFECT: return "SOUND_EFFECT"; case BD_EVENT_IDLE: return "IDLE";
+    case BD_EVENT_POPUP: return "POPUP"; case BD_EVENT_MENU: return "MENU";
+    case BD_EVENT_STEREOSCOPIC_STATUS: return "STEREO_STATUS";
+    case BD_EVENT_KEY_INTEREST_TABLE: return "KEY_INTEREST"; case BD_EVENT_UO_MASK_CHANGED: return "UO_MASK";
     default: return "?";
     }
 }
@@ -196,135 +184,135 @@ static char *w2u8(const wchar_t *w)
     return s;
 }
 
+static unsigned char g_buf[6144 * 32];
+static unsigned long long g_total;
+
+/* pump the VM for ms milliseconds, logging events */
+static int pump(BLURAY *bd, DWORD ms, CTX *ctx)
+{
+    DWORD t0 = GetTickCount();
+    int idle = 0;
+    while (GetTickCount() - t0 < ms) {
+        BD_EVENT ev;
+        int r = bd_read_ext(bd, g_buf, sizeof(g_buf), &ev);
+        if (r < 0) { printf("read error %d\n", r); return -1; }
+        g_total += (unsigned)r;
+        if (ev.event != BD_EVENT_NONE)
+            printf("[ev] %-16s (%2u) param=%u  (read %.1f MB)\n", ev_name(ev.event), ev.event, ev.param, g_total / 1048576.0);
+        if (r == 0 && ev.event == BD_EVENT_NONE) { if (++idle % 20 == 0) Sleep(5); }
+        else idle = 0;
+        if (g_total > 6000ull * 1048576) { printf("read limit\n"); return -2; }
+    }
+    (void)ctx;
+    return 0;
+}
+
 int wmain(int argc, wchar_t **argv)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
-    if (argc < 3) {
-        printf("usage: bdprobe <disc path> <output dir> [region A=1 B=2 C=4]\n");
-        return 1;
-    }
+    if (argc < 3) { printf("usage: bdprobe <disc|iso> <outdir> [region A=1 B=2 C=4]\n"); return 1; }
     char *path = w2u8(argv[1]);
-    int region = argc > 3 ? _wtoi(argv[3]) : 2;
+    int region = argc > 3 ? _wtoi(argv[3]) : 1;
     static wchar_t outabs[MAX_PATH];
     if (!_wfullpath(outabs, argv[2], MAX_PATH)) wcsncpy(outabs, argv[2], MAX_PATH - 1);
     _wmkdir(outabs);
 
-    int maj, min, mic;
-    bd_get_version(&maj, &min, &mic);
-    printf("libbluray %d.%d.%d\n", maj, min, mic);
-    printf("disc: %s\nregion mask: %d\n", path, region);
+    int maj, min, mic; bd_get_version(&maj, &min, &mic);
+    printf("libbluray %d.%d.%d\ndisc: %s\nregion mask: %d\n", maj, min, mic, path, region);
 
-    /* open strategy 1: UTF-8 path as given */
-    printf("[open] try utf8 path\n");
     BLURAY *bd = bd_open(path, NULL);
-    if (!bd) {
-        /* strategy 2: 8.3 short path (pure ASCII if 8.3 names enabled) */
-        wchar_t sp[MAX_PATH];
-        DWORD n = GetShortPathNameW(argv[1], sp, MAX_PATH);
-        if (n > 0 && n < MAX_PATH) {
-            char *s8 = w2u8(sp);
-            printf("[open] try short path: %s\n", s8);
-            bd = bd_open(s8, NULL);
-            free(s8);
-        } else {
-            printf("[open] no short path (err %lu)\n", GetLastError());
-        }
-    }
-    if (!bd) {
-        /* strategy 3: chdir into disc root and open relative "." */
-        DWORD attr = GetFileAttributesW(argv[1]);
-        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY)) {
-            if (SetCurrentDirectoryW(argv[1])) {
-                printf("[open] try chdir + \".\"\n");
-                bd = bd_open(".", NULL);
-            } else {
-                printf("[open] chdir failed (err %lu)\n", GetLastError());
-            }
-        } else {
-            printf("[open] path attr=0x%lx err=%lu\n", attr, GetLastError());
-        }
-    }
-    if (!bd) { printf("RESULT: FAIL bd_open (all strategies)\n"); return 2; }
+    if (!bd) { printf("RESULT: FAIL bd_open\n"); return 2; }
     printf("[open] OK\n");
-
     const BLURAY_DISC_INFO *di = bd_get_disc_info(bd);
-    printf("bluray_detected=%d first_play=%d top_menu=%d\n",
-           di->bluray_detected, di->first_play_supported, di->top_menu_supported);
-    printf("titles=%u hdmv=%u bdj=%u unsupported=%u\n",
-           di->num_titles, di->num_hdmv_titles, di->num_bdj_titles, di->num_unsupported_titles);
-    printf("bdj_detected=%d bdj_supported=%d libjvm=%d bdj_handled=%d\n",
-           di->bdj_detected, di->bdj_supported, di->libjvm_detected, di->bdj_handled);
-    printf("aacs_detected=%d aacs_handled=%d bdplus_detected=%d\n",
-           di->aacs_detected, di->aacs_handled, di->bdplus_detected);
+    printf("bluray_detected=%d first_play=%d top_menu=%d titles=%u hdmv=%u bdj=%u\n",
+           di->bluray_detected, di->first_play_supported, di->top_menu_supported,
+           di->num_titles, di->num_hdmv_titles, di->num_bdj_titles);
+    printf("aacs_detected=%d aacs_handled=%d bdplus_detected=%d\n", di->aacs_detected, di->aacs_handled, di->bdplus_detected);
     if (di->disc_name) printf("disc_name=%s\n", di->disc_name);
-
-    uint32_t nt = bd_get_titles(bd, TITLES_RELEVANT, 0);
-    int mt = bd_get_main_title(bd);
-    printf("relevant playlists=%u main_title_idx=%d\n", nt, mt);
-    if (mt >= 0) {
-        BLURAY_TITLE_INFO *ti = bd_get_title_info(bd, (uint32_t)mt, 0);
-        if (ti) {
-            printf("main: %05u.mpls duration=%.1fs chapters=%u\n",
-                   ti->playlist, ti->duration / 90000.0, ti->chapter_count);
-            bd_free_title_info(ti);
-        }
-    }
 
     bd_set_player_setting(bd, BLURAY_PLAYER_SETTING_REGION_CODE, (uint32_t)region);
     bd_set_player_setting_str(bd, BLURAY_PLAYER_SETTING_MENU_LANG, "eng");
     bd_set_player_setting_str(bd, BLURAY_PLAYER_SETTING_AUDIO_LANG, "eng");
     bd_set_player_setting_str(bd, BLURAY_PLAYER_SETTING_PG_LANG, "chi");
 
-    CTX ctx;
-    memset(&ctx, 0, sizeof(ctx));
-    ctx.outdir = outabs;
+    CTX ctx; memset(&ctx, 0, sizeof(ctx));
+    ctx.outdir = outabs; strcpy(ctx.tag, "first"); ctx.save_enabled = 1;
     bd_register_overlay_proc(bd, &ctx, overlay_cb);
 
     if (!bd_play(bd)) { printf("RESULT: FAIL bd_play\n"); bd_close(bd); return 3; }
-    printf("bd_play ok, running navigation...\n");
+    printf("bd_play ok\n");
 
-    static unsigned char buf[6144 * 32];
-    unsigned long long total = 0;
-    DWORD t0 = GetTickCount(), tlast = t0;
-    int phase = 0, idle = 0;
-    const uint32_t keys[] = { BD_VK_DOWN, BD_VK_RIGHT, BD_VK_UP };
-
-    for (;;) {
-        BD_EVENT ev;
-        int r = bd_read_ext(bd, buf, sizeof(buf), &ev);
-        if (r < 0) { printf("read error %d\n", r); break; }
-        total += (unsigned)r;
-        if (ev.event != BD_EVENT_NONE)
-            printf("[ev] %-14s param=%u  (read %.1f MB)\n", ev_name(ev.event), ev.param, total / 1048576.0);
-
-        if (ev.event == BD_EVENT_STILL_TIME || ev.event == BD_EVENT_STILL) {
-            /* still frame in menu: keep VM running */
-            Sleep(20);
+    /* phase 0: wait for menu (max 40 s, menu_call fallback at 15 s) */
+    DWORD t0 = GetTickCount(); int called = 0;
+    while (!ctx.menu_seen && GetTickCount() - t0 < 40000) {
+        if (pump(bd, 200, &ctx) < 0) break;
+        if (!called && GetTickCount() - t0 > 15000) {
+            printf("[nav] no menu after 15s -> bd_menu_call\n");
+            bd_menu_call(bd, -1); called = 1;
         }
-        if (r == 0 && ev.event == BD_EVENT_NONE) {
-            if (++idle % 50 == 0) Sleep(10);
-        } else idle = 0;
+    }
+    if (!ctx.menu_seen) {
+        printf("IG flushes=%d PG flushes=%d\nRESULT: NO MENU captured\n", ctx.flushes[1], ctx.flushes[0]);
+        bd_close(bd); return 4;
+    }
+    printf("[nav] menu visible after %.1fs\n", (GetTickCount() - t0) / 1000.0);
+    pump(bd, 1500, &ctx);
 
-        DWORD now = GetTickCount();
-        if (ctx.new_save) {
-            ctx.new_save = 0;
-            tlast = now;
-            if (phase < 3) {
-                printf("[key] send %s\n", phase == 0 ? "DOWN" : phase == 1 ? "RIGHT" : "UP");
-                bd_user_input(bd, -1, keys[phase]);
-                phase++;
-            }
-        }
-        if (phase >= 3 && now - tlast > 3000) break;
-        if (now - tlast > 20000 && ctx.saved > 0) break;
-        if (now - t0 > 90000) { printf("timeout\n"); break; }
-        if (total > 1500ull * 1048576) { printf("read limit\n"); break; }
+    /* phase 1: keyboard */
+    struct { uint32_t k; const char *n; } keys[] = {
+        { BD_VK_DOWN, "DOWN" }, { BD_VK_RIGHT, "RIGHT" }, { BD_VK_UP, "UP" }, { BD_VK_LEFT, "LEFT" } };
+    int key_changes = 0;
+    for (int i = 0; i < 4; i++) {
+        int f0 = ctx.flushes[1];
+        strcpy(ctx.tag, keys[i].n); ctx.save_enabled = 1;
+        printf("[key] %s\n", keys[i].n);
+        bd_user_input(bd, -1, keys[i].k);
+        pump(bd, 1200, &ctx);
+        if (ctx.flushes[1] > f0) key_changes++;
+        printf("[key] %s -> IG flushes +%d\n", keys[i].n, ctx.flushes[1] - f0);
     }
 
-    printf("IG flushes=%d PG flushes=%d menu images=%d\n", ctx.flushes[1], ctx.flushes[0], ctx.saved);
-    printf("RESULT: %s\n", ctx.saved > 0 ? "OK menu captured" : "NO MENU captured");
+    /* phase 2: mouse hover sweep over 1920x1080 grid */
+    int hits = 0, hx = -1, hy = -1, last_bbox = -1;
+    for (int y = 45; y < 1080 && hits < 40; y += 60) {
+        for (int x = 40; x < 1920; x += 80) {
+            int f0 = ctx.flushes[1];
+            int rr = bd_mouse_select(bd, -1, (uint16_t)x, (uint16_t)y);
+            if (ctx.flushes[1] == f0) pump(bd, 30, &ctx);
+            if (ctx.flushes[1] > f0) {
+                int b = ctx.minx * 7 + ctx.miny * 13 + ctx.maxx * 17 + ctx.maxy;
+                hits++;
+                printf("[mouse] hover (%d,%d) ret=%d -> highlight changed\n", x, y, rr);
+                if (hx < 0) { hx = x; hy = y; }
+                if (b != last_bbox && ctx.saved < 20) {
+                    sprintf(ctx.tag, "mouse_%d_%d", x, y); ctx.save_enabled = 1;
+                    bd_mouse_select(bd, -1, (uint16_t)(x + 1), (uint16_t)y);
+                    pump(bd, 50, &ctx);
+                    last_bbox = b;
+                }
+            }
+        }
+    }
+    printf("[mouse] hover hits=%d\n", hits);
+
+    /* phase 3: mouse click on first hit */
+    int click_nav = 0;
+    if (hx >= 0) {
+        printf("[mouse] click at (%d,%d)\n", hx, hy);
+        bd_mouse_select(bd, -1, (uint16_t)hx, (uint16_t)hy);
+        pump(bd, 300, &ctx);
+        bd_user_input(bd, -1, BD_VK_MOUSE_ACTIVATE);
+        unsigned long long before = g_total;
+        strcpy(ctx.tag, "after_click"); ctx.save_enabled = 1;
+        pump(bd, 6000, &ctx);
+        click_nav = g_total > before + 4 * 1048576;
+        printf("[mouse] after click read +%.1f MB\n", (g_total - before) / 1048576.0);
+    }
+
+    printf("SUMMARY: menu=yes images=%d key_highlight_changes=%d/4 mouse_hover_hits=%d click_started_playback=%s\n",
+           ctx.saved, key_changes, hits, click_nav ? "yes" : "no");
+    printf("RESULT: OK menu captured\n");
     bd_close(bd);
-    free(ctx.pl[0].px); free(ctx.pl[1].px);
-    free(path);
-    return ctx.saved > 0 ? 0 : 4;
+    free(ctx.pl[0].px); free(ctx.pl[1].px); free(path);
+    return 0;
 }
