@@ -27,6 +27,7 @@
 	X(bdnav_seek_chapter)           \
 	X(bdnav_get_current_chapter)    \
 	X(bdnav_get_playlist_info)      \
+	X(bdnav_read_file)              \
 	X(bdnav_lock_plane)             \
 	X(bdnav_unlock_plane)
 
@@ -58,5 +59,5 @@ CStringA BDNavWToUTF8(const CString& s);
 CString BDNavGetDiscRoot(const CString& path);   // .iso -> itself; ...\BDMV\index.bdmv -> disc root folder
 void BDNavLog(const CString& line);              // appends to bdnav.log next to mpc-be64.exe
 
-// BDMenu P1.1: diagnostics only (opens the disc with libbluray, logs disc info, closes it)
+// diagnostics only (opens the disc with libbluray, logs disc info, closes it)
 CString BDNavProbe(const CString& path);

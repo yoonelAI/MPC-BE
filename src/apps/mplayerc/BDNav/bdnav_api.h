@@ -16,7 +16,7 @@
 extern "C" {
 #endif
 
-#define BDNAV_API_VERSION 1
+#define BDNAV_API_VERSION 2
 
 #ifdef BDNAV_BUILD
 #define BDNAV_EXPORT __declspec(dllexport)
@@ -168,6 +168,7 @@ BDNAV_EXPORT uint64_t    bdnav_tell_time(BDNAV* nav);                  /* 90 kHz
 BDNAV_EXPORT int64_t     bdnav_seek_chapter(BDNAV* nav, uint32_t chapter);
 BDNAV_EXPORT uint32_t    bdnav_get_current_chapter(BDNAV* nav);
 BDNAV_EXPORT int         bdnav_get_playlist_info(BDNAV* nav, uint32_t playlist, BDNAV_TITLE_INFO* info);
+BDNAV_EXPORT int         bdnav_read_file(BDNAV* nav, const char* path, uint8_t* buf, int buflen); /* path relative to disc root; bytes or -1 */
 
 /* plane access: always pair with bdnav_unlock_plane() when lock returned 1 */
 BDNAV_EXPORT int         bdnav_lock_plane(BDNAV* nav, int plane, BDNAV_PLANE* out);

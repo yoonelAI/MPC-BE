@@ -102,7 +102,18 @@ CStringA BDNavWToUTF8(const CString& s)
 CString BDNavGetDiscRoot(const CString& path)
 {
 	CString root(path);
+	root.TrimRight(L'\\');
 	if (root.GetLength() >= 4 && root.Right(4).CompareNoCase(L".iso") == 0) {
+		return root;
+	}
+
+	if (::PathIsDirectoryW(root)) {
+		if (root.GetLength() >= 5 && root.Right(5).CompareNoCase(L"\\BDMV") == 0) {
+			root.Truncate(root.GetLength() - 5);
+		}
+		if (root.GetLength() == 2 && root[1] == L':') {
+			root += L'\\';
+		}
 		return root;
 	}
 
@@ -124,6 +135,7 @@ void BDNavLog(const CString& line)
 	const CString logfile = GetExeDir() + L"\\bdnav.log";
 	FILE* f = nullptr;
 	if (_wfopen_s(&f, logfile, L"ab") == 0 && f) {
+		_fseeki64(f, 0, SEEK_END);
 		if (_ftelli64(f) == 0) {
 			fwrite("\xEF\xBB\xBF", 1, 3, f);
 		}
