@@ -49,6 +49,8 @@
 #include "BDNav/BDNavigator.h"
 #include "BDNav/BDMenuSubPic.h"
 
+#define TIMER_BDNAV_HIDE 0xBD0E
+
 #include <ExtLib/BaseClasses/mtype.h>
 #include <Mpconfig.h>
 #include <ks.h>
@@ -2502,6 +2504,12 @@ LRESULT CMainFrame::OnHotKey(WPARAM wParam, LPARAM lParam)
 
 void CMainFrame::OnTimer(UINT_PTR nIDEvent)
 {
+	if (nIDEvent == TIMER_BDNAV_HIDE) {
+		KillTimer(TIMER_BDNAV_HIDE);
+		BDNavUpdateMenu(true);
+		return;
+	}
+
 	CAppSettings& s = AfxGetAppSettings();
 
 	switch (nIDEvent) {
@@ -3714,6 +3722,9 @@ LRESULT CMainFrame::OnPostOpen(WPARAM wParam, LPARAM lParam)
 		}
 	} else {
 		OnFilePostOpenMedia(pOMD);
+		if (m_bBDNavActive) {
+			BDNavLogGraph();
+		}
 	}
 
 	Content::Online::Clear();
@@ -21347,26 +21358,47 @@ LRESULT CMainFrame::OnBDNavNotify(WPARAM wParam, LPARAM lParam)
 {
 	CBDNavigator::Get().NotifyHandled();
 	if (m_bBDNavActive) {
-		BDNavUpdateMenu();
+		BDNavUpdateMenu(false);
 	}
 	return 0;
 }
 
-void CMainFrame::BDNavUpdateMenu()
+void CMainFrame::BDNavUpdateMenu(bool bHideTimer)
 {
+	auto& nav = CBDNavigator::Get();
 	if (!m_pCAP) {
 		return;
 	}
 
-	if (CBDNavigator::Get().IsMenuVisible()) {
+	if (nav.IsMenuVisible()) {
+		KillTimer(TIMER_BDNAV_HIDE);
 		if (!m_pBDMenuSubPic) {
 			m_pBDMenuSubPic = (ISubPicProvider*)DNew CBDMenuSubPicProvider();
 		}
-		m_bBDNavMenuShown = true;
-		m_pCAP->SetSubPicProvider(m_pBDMenuSubPic);
-		m_pCAP->Invalidate();
+		nav.SetOverlayOn(true);
+		if (!m_bBDNavMenuShown) {
+			m_bBDNavMenuShown = true;
+			m_pCAP->SetSubPicProvider(m_pBDMenuSubPic);
+			m_pCAP->Invalidate();
+		} else {
+			// keep the window that is on screen now, re-render the following ones
+			REFERENCE_TIME rt = 0;
+			if (m_pMS) {
+				m_pMS->GetCurrentPosition(&rt);
+			}
+			if (rt < 0) {
+				rt = 0;
+			}
+			m_pCAP->Invalidate((rt / BDMENU_WINDOW + 2) * BDMENU_WINDOW);
+		}
 	} else if (m_bBDNavMenuShown) {
+		if (!bHideTimer) {
+			// libbluray may flush an empty plane between two menu pages: hide only if it stays empty
+			SetTimer(TIMER_BDNAV_HIDE, 300, nullptr);
+			return;
+		}
 		m_bBDNavMenuShown = false;
+		nav.SetOverlayOn(false);
 		CComQIPtr<ISubPicProvider> pSPP;
 		if (m_pCurrentSubStream && !(m_iSubtitleSel & 0x80000000)) {
 			pSPP = m_pCurrentSubStream.p;
@@ -21374,6 +21406,32 @@ void CMainFrame::BDNavUpdateMenu()
 		m_pCAP->SetSubPicProvider(pSPP);
 		m_pCAP->Invalidate();
 	}
+}
+
+void CMainFrame::BDNavLogGraph()
+{
+	if (!m_pGB) {
+		return;
+	}
+	BeginEnumFilters(m_pGB, pEF, pBF) {
+		BDNavLog(L"graph: " + CString(GetFilterName(pBF)));
+		if (CComQIPtr<IAMStreamSelect> pSS = pBF.p) {
+			DWORD cStreams = 0;
+			if (SUCCEEDED(pSS->Count(&cStreams))) {
+				for (DWORD i = 0; i < cStreams; i++) {
+					DWORD dwFlags = 0;
+					WCHAR* pszName = nullptr;
+					if (SUCCEEDED(pSS->Info(i, nullptr, &dwFlags, nullptr, nullptr, &pszName, nullptr, nullptr)) && pszName) {
+						CString m;
+						m.Format(L"    stream %u%s: %s", i, (dwFlags & (AMSTREAMSELECTINFO_ENABLED | AMSTREAMSELECTINFO_EXCLUSIVE)) ? L" *" : L"", pszName);
+						BDNavLog(m);
+						CoTaskMemFree(pszName);
+					}
+				}
+			}
+		}
+	}
+	EndEnumFilters;
 }
 
 bool CMainFrame::BDNavMouse(const CPoint& point, bool bClick)

@@ -1335,7 +1335,8 @@ public:
 	CString m_strBDNavOrigPath;
 	CComPtr<ISubPicProvider> m_pBDMenuSubPic;
 	BOOL OpenBDNav(const CString& path, BOOL bAddRecent);
-	void BDNavUpdateMenu();
+	void BDNavUpdateMenu(bool bHideTimer);
+	void BDNavLogGraph();
 	bool BDNavMouse(const CPoint& point, bool bClick);
 	bool BDNavKey(UINT vk);
 
