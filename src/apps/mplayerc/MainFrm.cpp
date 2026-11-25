@@ -689,6 +689,30 @@ CMainFrame::~CMainFrame()
 	}
 }
 
+// BDMenu: IME helpers (imm32 loaded dynamically)
+static HMODULE PlayerImm32()
+{
+	static HMODULE h = ::LoadLibraryW(L"imm32.dll");
+	return h;
+}
+
+static void PlayerDisableIME(HWND hWnd)
+{
+	typedef BOOL (WINAPI *PFN)(HWND, HANDLE, DWORD);
+	static PFN fn = PlayerImm32() ? (PFN)::GetProcAddress(PlayerImm32(), "ImmAssociateContextEx") : nullptr;
+	if (fn && hWnd) {
+		fn(hWnd, nullptr, 0);
+	}
+}
+
+static UINT PlayerImmGetVirtualKey(HWND hWnd)
+{
+	typedef UINT (WINAPI *PFN)(HWND);
+	static PFN fn = PlayerImm32() ? (PFN)::GetProcAddress(PlayerImm32(), "ImmGetVirtualKey") : nullptr;
+	return fn ? fn(hWnd) : 0;
+}
+
+
 int CMainFrame::OnCreate(LPCREATESTRUCT lpCreateStruct)
 {
 	if (__super::OnCreate(lpCreateStruct) == -1) {
@@ -970,6 +994,10 @@ int CMainFrame::OnCreate(LPCREATESTRUCT lpCreateStruct)
 	RegisterApplicationRestart(L"", RESTART_NO_CRASH | RESTART_NO_HANG);
 
 	cmdLineThread = std::thread([this] { cmdLineThreadFunction(); });
+
+	// BDMenu: no IME composition in the player window -> hotkeys work in any input mode (e.g. Chinese IME)
+	PlayerDisableIME(m_hWnd);
+	PlayerDisableIME(m_wndView.m_hWnd);
 
 	return 0;
 }
@@ -1321,6 +1349,18 @@ BOOL CMainFrame::PreCreateWindow(CREATESTRUCT& cs)
 
 BOOL CMainFrame::PreTranslateMessage(MSG* pMsg)
 {
+	if ((pMsg->message == WM_KEYDOWN || pMsg->message == WM_SYSKEYDOWN) && pMsg->wParam == VK_PROCESSKEY) {
+		// BDMenu: the IME took the key (VK_PROCESSKEY): give hotkeys their real key, except in edit fields
+		WCHAR cls[32] = {};
+		::GetClassNameW(pMsg->hwnd, cls, (int)std::size(cls));
+		if (_wcsnicmp(cls, L"Edit", 4) != 0 && _wcsnicmp(cls, L"RichEdit", 8) != 0 && _wcsnicmp(cls, L"ComboBox", 8) != 0) {
+			const UINT vk = PlayerImmGetVirtualKey(pMsg->hwnd);
+			if (vk && vk != VK_PROCESSKEY) {
+				pMsg->wParam = vk;
+			}
+		}
+	}
+
 	if (pMsg->message == WM_KEYDOWN && m_bBDNavActive && BDNavKey((UINT)pMsg->wParam)) {
 		return TRUE;
 	}

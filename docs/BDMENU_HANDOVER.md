@@ -1,7 +1,7 @@
 # MPC-BE BDMenu 项目移交文档
 
 > 每轮开发后更新本文件（顶部"当前状态"和末尾"开发记录"）。换 agent / 换对话时先读这里。
-> 最后更新：2026-11-25 19:30（Asia/Shanghai） 版本 P1.3
+> 最后更新：2026-11-25 20:30（Asia/Shanghai） 版本 P1.3.1
 
 ## 1. 目标（用户需求）
 - 基于 **MPC-BE 1.9.3**（最新稳定版）改内核，实现**蓝光 ISO / BDMV 先出菜单、鼠标可操作**；参考 mpv 0.42（PR #18080）和 Yaozhil/mpv-Yaozhi。
@@ -18,7 +18,9 @@
 | 跳转后画面声音立即切换（链路 flush + 时间重设） | ✅ |
 | LPCM 16/24bit 片段间格式变化 | ✅ |
 | 进度条（标题时间）显示/点击/拖动 | ✅ |
-| 章节：PageUp/PageDown、导航→章节、进度条标记 | ✅ 已编译，待用户测 |
+| 章节：PageUp/PageDown、导航→章节、进度条标记 | ✅ 用户确认；刻度需开 选项→播放器→界面→显示章节标记（MPC-BE 原生，默认关） |
+| 中文输入法下快捷键（VK_PROCESSKEY） | ✅ 主窗口/视频窗口禁用 IME + PreTranslateMessage 还原真实按键（待用户复测） |
+| 语言包版本检查 | ✅ 只比较 1.9.3，不比较修订号（修订号=git 提交数，推送后会变） |
 | 光盘切音轨 → 播放器同步 | ✅ 已编译，未测（KARA 只有 1 条音轨） |
 | 崩溃保护（blocklist）、开始 20 秒内读盘失败自动回退 | ✅ 已编译，未测 |
 | 日志精简（bdnav_debug.txt 打开详细日志，2MB 轮换） | ✅ |
@@ -55,6 +57,7 @@ upstream\, src\        早期只读源码快照/镜像（已被 repo\ 取代，�
   | dll  | 编 bdnav.dll（几秒），部署到 agent\ 和 builds\local |
   | deploy | 只部署 | kara | 用 builds\local 打开 KARA | push | 提交推送 GitHub | stop | 退出 |
 - 修改 build_agent.cmd 后要让用户**关掉代理窗口重开**（cmd 运行中的批处理被改会出错）。
+- 坑：**修订号 REV_NUM = git describe 的提交数**，推送/提交后会变；agent `main` 只编 exe 不编 Lang → 语言包版本不一致（已放宽检查；发布前用 `full` 同时重编 Lang）。
 - 坑：系统代码页 936 → 必须 `set CL=/utf-8`（代理已设）；改编译选项后删 `repo\_obj` 下 .obj/.pch；
   `repo\build.bat` 的 vswhere 加了 `-products *`（否则找不到 Build Tools）。
 - 云端：GitHub Actions `.github/workflows/main.yml`（完整绿色包，约 15 分钟）、`bdlibs.yml`（libbluray 库包）、`bdprobe.yml`（诊断工具）。
@@ -97,7 +100,10 @@ upstream\, src\        早期只读源码快照/镜像（已被 repo\ 取代，�
 - BD-J 识别：BDMV\BDJO\*.bdjo 和 BDMV\JAR\*.jar **有文件**（目录存在但为空 = HDMV，例如 KARA）。
 
 ## 9. 下一步（按优先级）
-1. 用户测 P1.3：章节键、进度条章节标记、日志精简后是否正常。
+0. 测试盘候选（用户提供目录清单 E:\AI\MPC-BE-BDMenu\新建文本文档.txt）：
+   - 蜘蛛侠：崭新之日 2026 UHD（BDJO 5 个 .bdjo、JAR\00000.jar、CERTIFICATE app/bu.discroot.crt）→ **BD-J**，UHD HEVC，TrueHD/Atmos
+   - 倩女幽魂3 1991 UHD（无 BDJO/JAR，MovieObject.bdmv 1.81KB，大量 18–30KB 小 m2ts 菜单片段）→ **HDMV**，UHD HEVC + LPCM 1.0
+1. 用户测输入法修复。
 2. 收集"菜单与正片编码不同"的蓝光盘 → 实现格式变化时重建视频/音频解码链路。
 3. PG 字幕同步（PG_TEXTST / PG_TEXTST_STREAM 事件 → 选择分离器字幕流 / 开关）。
 4. BD-J：需 BD-J 测试盘；打包精简 JRE（参考 mpv-Yaozhi），libbluray BD-J 需 libbluray.jar（vcpkg 是否带 BD-J 支持待确认）。
@@ -108,3 +114,7 @@ upstream\, src\        早期只读源码快照/镜像（已被 repo\ 取代，�
 - 11-25 本机编译环境；修沙沙声（LPCM 格式）、悬停延迟、跳转卡顿/重复（全链路 flush+resync）、根菜单、进度条（锚点+seek_time）、
   菜单闪烁（同步字幕队列）、进度条闪回/延迟（待定 seek 序号）；本机编 bdnav.dll；
   P1.3：章节、音轨同步、崩溃保护、早期失败回退、日志精简、绿色版+补丁包、git_push。
+- 11-25 19:52 用户本机 git 登录并推送成功（baf65e7，27 文件）；20:00 中文输入法快捷键修复。
+- 11-25 20:25 P1.3.1：推送后修订号 25→29，旧中文语言包被拒（"Your language pack will not work..."）→ mplayerc.cpp SetLanguage 只比较前三段版本；full 重编 Lang。
+  用户确认：章节刻度（开启显示章节标记后）正常，片头无章节属正常。重新打包 release\*-P1.3.1-*.zip。
+  测试盘：用户说倩女幽魂/蜘蛛侠下载可能不完整，会换别的盘。

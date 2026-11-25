@@ -1531,7 +1531,8 @@ void CMPlayerCApp::SetLanguage(int nLanguage, bool bSave/* = true*/)
 	if (!strSatellite.IsEmpty()) {
 		const FileVersion::Ver SatVersion = FileVersion::GetVer(strSatellite);
 		if (SatVersion.value != 0) {
-			if (SatVersion.value == FileVersion::Ver(MPC_VERSION_FULL_NUM).value) {
+			// BDMenu: compare major.minor.build only, the revision is the git commit count of the local build
+			if ((SatVersion.value >> 16) == (FileVersion::Ver(MPC_VERSION_FULL_NUM).value >> 16)) {
 				hMod = LoadLibraryW(strSatellite);
 				if (bSave) {
 					s.iLanguage = nLanguage;
