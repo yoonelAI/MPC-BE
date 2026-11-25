@@ -383,6 +383,8 @@ BDNAV_EXPORT void bdnav_set_scr(BDNAV* nav, int64_t pts90k) { if (nav) bd_set_sc
 
 BDNAV_EXPORT uint64_t bdnav_tell_time(BDNAV* nav) { return nav ? bd_tell_time(nav->bd) : 0; }
 
+BDNAV_EXPORT int64_t bdnav_seek_time(BDNAV* nav, uint64_t tick90k) { return nav ? bd_seek_time(nav->bd, tick90k) : -1; }
+
 BDNAV_EXPORT int64_t bdnav_seek_chapter(BDNAV* nav, uint32_t chapter) { return nav ? bd_seek_chapter(nav->bd, chapter) : -1; }
 
 BDNAV_EXPORT uint32_t bdnav_get_current_chapter(BDNAV* nav) { return nav ? bd_get_current_chapter(nav->bd) : 0; }
