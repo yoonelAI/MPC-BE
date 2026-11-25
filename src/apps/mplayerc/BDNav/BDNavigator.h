@@ -59,8 +59,23 @@ public:
 	bool GetChapters(std::vector<REFERENCE_TIME>& chapters, uint32_t& gen);
 	// audio stream selected by the disc (PID), consumed by the main thread; -1 = none
 	int  TakeAudioPid() { return m_audioPid.exchange(-1); }
+	// streams selected by the disc for the clip being played (PIDs), -1 = none / unknown
+	int  GetDiscAudioPid();
+	bool TakeSubtitleChange() { return m_bPgDirty.exchange(false); }
+	int  GetDiscSubtitlePid(bool& bEnabled);
+	void ClearReader(CBDNavReader* pReader);
+	bool IsSegmentPlayedOut();
+	int  SegmentRemainingMs();
 	// navigation failed right at the start -> main thread reopens with the original playback
 	static const WPARAM kNotifyFallback = 1;
+	// the stream format changes (other video codec/resolution or new audio streams): the current
+	// DirectShow graph plays out, then the main thread rebuilds it while the navigation keeps going
+	static const WPARAM kNotifyRebuild = 2;
+	static const int    kReadSegmentEnd = -2;
+	static const WPARAM kNotifyDrained = 3;   // the last graph's data was read completely
+	void OnSegmentDrained() { if (m_hNotify) ::PostMessageW(m_hNotify, WM_BDNAV_NOTIFY, kNotifyDrained, 0); }
+	bool IsRebuildPending() const { return m_bRebuildPending; }
+	void BeginSegment();   // CBDNavReader::Load, before reading
 	// writes BDMV\CLIPINF\<clip>.clpi of the clip being played into the temp folder and
 	// returns the matching virtual ...\BDMV\STREAM\<clip>.m2ts path (lets the MPEG splitter read clip info)
 	CString PrepareClipInfoPath();
@@ -135,7 +150,26 @@ private:
 	DWORD      m_dwUserActionTick = 0;
 	bool       m_bAlignWarned = false;
 	bool       m_bUserJumpPending = false;
+	// graph segments (format changes)
+	bool       m_bSegmentEnd = false;            // under m_csNav
+	std::atomic<bool> m_bRebuildPending{ false };
+	DWORD      m_dwLastFlushTick = 0;
+	bool       m_bGraphSig = false;
+	int        m_graphPG = 0;                       // PG streams of the clip the graph was built for
+	bool       CheckFormatChange(CString& extra);   // m_csNav held; true = rebuild needed
+	int        m_pgNumber = 0;                      // PG stream number selected by the disc (1..N, 0 = none)
+	bool       m_pgEnabled = false;
+	std::atomic<bool> m_bPgDirty{ false };
+	CString    m_graphSigV, m_graphSigA;         // format the current graph was built for
+	std::vector<BYTE> m_carry;                   // data of the new clip read together with the boundary event
+	bool ClipSig(int playlist, int item, CString& v, CString& a);
 	bool       m_bVerbose = false;
+	// diagnostics: bdnav_dump.txt in the data folder -> the TS data of each graph segment is written to dump\seg_NN.m2ts
+	FILE*      m_dumpFile = nullptr;
+	int        m_dumpSeg = 0;
+	unsigned long long m_dumpBytes = 0;
+	void       DumpData(const BYTE* p, int n);
+	void       DumpNewSegment();
 	DWORD      m_dwPlayTick = 0;
 	bool       m_bFallbackPosted = false;
 	std::atomic<int> m_audioPid{ -1 };

@@ -382,6 +382,15 @@ HRESULT CBaseSplitterOutputPin::DeliverPacket(std::unique_ptr<CPacket> p)
 		m_rtPrev = p->rtStart;
 	}
 
+	if (p->rtStop != INVALID_TIME) {
+		LONGLONG cur = m_pSplitter->m_rtBDNavLastOut;
+		while ((cur == INVALID_TIME || p->rtStop > cur)
+				&& InterlockedCompareExchange64(&m_pSplitter->m_rtBDNavLastOut, p->rtStop, cur) != cur) {
+			cur = m_pSplitter->m_rtBDNavLastOut;
+		}
+		m_pSplitter->OnBDNavDelivered(m_pSplitter->m_rtBDNavLastOut);
+	}
+
 	if (p->bBDNavMark && p->rtStart != INVALID_TIME) {
 		InterlockedCompareExchange64(&m_pSplitter->m_rtBDNavMarkTime, p->rtStart, INVALID_TIME);
 	}

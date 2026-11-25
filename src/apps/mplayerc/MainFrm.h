@@ -1333,6 +1333,12 @@ public:
 	bool m_bBDNavMenuShown = false;
 	bool m_bBDNavSkip = false;
 	uint32_t m_nBDNavChapGen = 0;
+	bool m_bBDNavKeepSession = false;
+	DWORD m_dwBDNavRebuildTick = 0;
+	DWORD m_dwBDNavRebuildDeadline = 0;
+	void BDNavRebuild();
+	void BDNavAfterOpen();
+	void BDNavSyncSubtitle();
 	void BDNavSyncAudio(int pid);
 	void BDNavUpdateChapters();
 	CString m_strBDNavOrigPath;

@@ -110,6 +110,8 @@ protected:
 	REFERENCE_TIME m_rtOffset = INVALID_TIME;
 	volatile LONGLONG m_rtResyncTo = INVALID_TIME; // BDMenu: re-time the next packet to this stream time
 	volatile LONG     m_nBDNavMarkArm = 0;              // BDMenu: armed time marker id
+	volatile LONGLONG m_rtBDNavLastOut = INVALID_TIME;  // BDMenu: latest stop time sent downstream
+	virtual void OnBDNavDelivered(REFERENCE_TIME rt) {}  // BDMenu: called by the output pins after each delivered packet
 	volatile LONGLONG m_rtBDNavMarkTime = INVALID_TIME; // BDMenu: stream time of the first marked packet
 	std::list<DWORD>  m_BDNavMarkTagged;
 

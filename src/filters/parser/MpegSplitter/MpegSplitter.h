@@ -89,6 +89,7 @@ class __declspec(uuid("DC257063-045F-4BE2-BD5B-E12279C464F0"))
 	LONG m_nBDNavMarkDone = 0;
 	DWORD m_dwBDNavMarkTick = 0;
 	void BDNavResync();
+	void OnBDNavDelivered(REFERENCE_TIME rt) override { if (m_pBDNavSource) m_pBDNavSource->SetDeliveredTime(rt); }
 
 	HRESULT CreateOutputs(IAsyncReader* pAsyncReader);
 	void	ReadClipInfo(LPCOLESTR pszFileName);

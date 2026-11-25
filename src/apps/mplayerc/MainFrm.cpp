@@ -50,6 +50,8 @@
 #include "BDNav/BDMenuSubPic.h"
 
 #define TIMER_BDNAV_HIDE 0xBD0E
+#define TIMER_BDNAV_REBUILD 0xBD0F
+#define TIMER_BDNAV_PLAYOUT 0xBD10
 
 #include <ExtLib/BaseClasses/mtype.h>
 #include <Mpconfig.h>
@@ -2549,6 +2551,32 @@ void CMainFrame::OnTimer(UINT_PTR nIDEvent)
 		BDNavUpdateMenu(true);
 		return;
 	}
+	if (nIDEvent == TIMER_BDNAV_REBUILD) {
+		KillTimer(TIMER_BDNAV_REBUILD);
+		KillTimer(TIMER_BDNAV_PLAYOUT);
+		BDNavRebuild();
+		return;
+	}
+	if (nIDEvent == TIMER_BDNAV_PLAYOUT) {
+		// format change pending: rebuild as soon as the old graph has shown its last frame
+		auto& nav = CBDNavigator::Get();
+		if (!m_bBDNavActive || !nav.IsRebuildPending()) {
+			KillTimer(TIMER_BDNAV_PLAYOUT);
+		} else {
+			// deadline: what is still buffered in the old graph + 1.5 s (the disc reads far ahead of playback);
+			// keeps extending while paused, hard limit 2 minutes
+			const DWORD now = ::GetTickCount();
+			const int remaining = nav.SegmentRemainingMs();
+			if (remaining >= 0 && (int)(now + remaining + 1500 - m_dwBDNavRebuildDeadline) > 0) {
+				m_dwBDNavRebuildDeadline = now + remaining + 1500;
+			}
+			if (nav.IsSegmentPlayedOut() || (int)(now - m_dwBDNavRebuildDeadline) > 0 || now - m_dwBDNavRebuildTick > 120000) {
+				KillTimer(TIMER_BDNAV_PLAYOUT);
+				BDNavRebuild();
+			}
+		}
+		return;
+	}
 
 	CAppSettings& s = AfxGetAppSettings();
 
@@ -3284,6 +3312,11 @@ LRESULT CMainFrame::OnGraphNotify(WPARAM wParam, LPARAM lParam)
 				m_bBuffering = ((HRESULT)evParam1 != S_OK);
 				break;
 			case EC_COMPLETE:
+				if (m_bBDNavActive && CBDNavigator::Get().IsRebuildPending()) {
+					// BDMenu: the graph played out its last segment -> rebuild for the new stream format
+					SetTimer(TIMER_BDNAV_REBUILD, 1, nullptr);
+					break;
+				}
 				if (!GraphEventComplete()) {
 					return hr;
 				}
@@ -3768,6 +3801,7 @@ LRESULT CMainFrame::OnPostOpen(WPARAM wParam, LPARAM lParam)
 		OnFilePostOpenMedia(pOMD);
 		if (m_bBDNavActive) {
 			BDNavLogGraph();
+			BDNavAfterOpen();
 		}
 	}
 
@@ -14998,7 +15032,9 @@ void CMainFrame::CloseMediaPrivate()
 	m_bDVDStillOn = false;
 
 	// BDMenu
-	if (m_bBDNavActive || CBDNavigator::Get().IsOpen()) {
+	KillTimer(TIMER_BDNAV_REBUILD);
+	KillTimer(TIMER_BDNAV_PLAYOUT);
+	if (!m_bBDNavKeepSession && (m_bBDNavActive || CBDNavigator::Get().IsOpen())) {
 		CBDNavigator::Get().Close();
 	}
 	m_bBDNavActive = false;
@@ -21422,6 +21458,22 @@ BOOL CMainFrame::OpenBDNav(const CString& path, BOOL bAddRecent)
 
 LRESULT CMainFrame::OnBDNavNotify(WPARAM wParam, LPARAM lParam)
 {
+	if (wParam == CBDNavigator::kNotifyDrained) {
+		return 0;   // handled by the play-out timer
+	}
+	if (wParam == CBDNavigator::kNotifyRebuild) {
+		// rebuild when the buffered data has played out (EC_COMPLETE or play-out timer), at most 8 s
+		if (m_bBDNavActive) {
+			if (lParam) {
+				SetTimer(TIMER_BDNAV_REBUILD, 1, nullptr);   // user jump: no need to play out the old data
+			} else {
+				m_dwBDNavRebuildTick = ::GetTickCount();
+				m_dwBDNavRebuildDeadline = m_dwBDNavRebuildTick + 8000;
+				SetTimer(TIMER_BDNAV_PLAYOUT, 40, nullptr);
+			}
+		}
+		return 0;
+	}
 	if (wParam == CBDNavigator::kNotifyFallback) {
 		// navigation failed right at the start: play this disc the original way
 		if (m_bBDNavActive) {
@@ -21441,8 +21493,112 @@ LRESULT CMainFrame::OnBDNavNotify(WPARAM wParam, LPARAM lParam)
 		if (pid > 0) {
 			BDNavSyncAudio(pid);
 		}
+		if (nav.TakeSubtitleChange()) {
+			BDNavSyncSubtitle();
+		}
 	}
 	return 0;
+}
+
+void CMainFrame::BDNavSyncSubtitle()
+{
+	// PG subtitle stream / on-off chosen by the disc (subtitle menu, PSR2) -> player
+	bool bEnabled = false;
+	const int pid = CBDNavigator::Get().GetDiscSubtitlePid(bEnabled);
+
+	int index = -1;
+	if (pid > 0) {
+		CComQIPtr<IAMStreamSelect> pSS = m_pMainSourceFilter.p;
+		DWORD cStreams = 0;
+		if (pSS && SUCCEEDED(pSS->Count(&cStreams))) {
+			CString id1, id2;
+			id1.Format(L"(%04x)", pid);
+			id2.Format(L"(%04X)", pid);
+			int k = 0;
+			for (DWORD i = 0; i < cStreams; i++) {
+				DWORD dwGroup = DWORD_MAX;
+				WCHAR* pszName = nullptr;
+				if (FAILED(pSS->Info(i, nullptr, nullptr, nullptr, &dwGroup, &pszName, nullptr, nullptr))) {
+					continue;
+				}
+				CString name;
+				if (pszName) {
+					name = pszName;
+					CoTaskMemFree(pszName);
+				}
+				if (dwGroup != 2) {
+					continue;
+				}
+				if (name.Find(id1) >= 0 || name.Find(id2) >= 0) {
+					index = k;
+					break;
+				}
+				k++;
+			}
+		}
+	}
+
+	CString msg;
+	if (bEnabled && index >= 0) {
+		SelectSubtilesAMStream(index);
+		m_iSubtitleSel = 0;        // shown even if subtitles are switched off in the player settings
+		m_nSelSub2 = 0;
+		UpdateSubtitle();
+		msg.Format(L"subtitles: disc selected PG stream pid 0x%04x", pid);
+	} else {
+		if (!(m_iSubtitleSel & 0x80000000)) {
+			m_nSelSub2 = m_iSubtitleSel;
+		}
+		m_iSubtitleSel = -1;
+		UpdateSubtitle();
+		msg.Format(L"subtitles: off (disc pg %s, pid %d)", bEnabled ? L"on" : L"off", pid);
+	}
+	BDNavLog(msg);
+
+	if (m_bBDNavMenuShown && m_pCAP && m_pBDMenuSubPic) {
+		m_pCAP->SetSubPicProvider(m_pBDMenuSubPic);   // the menu stays on top
+		m_pCAP->Invalidate();
+	}
+}
+
+void CMainFrame::BDNavRebuild()
+{
+	auto& nav = CBDNavigator::Get();
+	if (!m_bBDNavActive || !nav.IsOpen() || !nav.IsRebuildPending()) {
+		return;
+	}
+	BDNavLog(L"stream format changed -> rebuilding the playback graph");
+
+	m_bBDNavKeepSession = true;
+	CloseMedia(TRUE);
+	m_bBDNavKeepSession = false;
+
+	m_bBDNavActive = true;
+	m_bBDNavMenuShown = false;
+	g_bBDNavSubpicNoQueue = true;
+	g_bBDNavNoQueueApplied = false;
+
+	if (!OpenFile(nav.GetMarkerPath(), INVALID_TIME, FALSE)) {
+		nav.Close();
+		m_bBDNavActive = false;
+		g_bBDNavSubpicNoQueue = false;
+	}
+}
+
+void CMainFrame::BDNavAfterOpen()
+{
+	// new graph (first open or rebuild): menu overlay, chapters and disc audio selection
+	auto& nav = CBDNavigator::Get();
+	m_nBDNavChapGen = 0;
+	nav.TakeAudioPid();
+	const int pid = nav.GetDiscAudioPid();
+	if (pid > 0) {
+		BDNavSyncAudio(pid);
+	}
+	nav.TakeSubtitleChange();
+	BDNavSyncSubtitle();
+	BDNavUpdateMenu(false);
+	BDNavUpdateChapters();
 }
 
 void CMainFrame::BDNavUpdateChapters()

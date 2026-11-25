@@ -443,7 +443,7 @@ BDNAV_EXPORT int bdnav_get_clip_info(BDNAV* nav, uint32_t playlist, uint32_t ite
 		int k;
 		n += _snprintf(desc + n, desclen - 1 - n, "V:");
 		for (k = 0; k < ci->video_stream_count && n < (size_t)desclen - 64; k++)
-			n += _snprintf(desc + n, desclen - 1 - n, " %04x=%s", ci->video_streams[k].pid, coding_name(ci->video_streams[k].coding_type));
+			n += _snprintf(desc + n, desclen - 1 - n, " %04x=%s/f%u", ci->video_streams[k].pid, coding_name(ci->video_streams[k].coding_type), ci->video_streams[k].format);
 		n += _snprintf(desc + n, desclen - 1 - n, " A:");
 		for (k = 0; k < ci->audio_stream_count && n < (size_t)desclen - 64; k++)
 			n += _snprintf(desc + n, desclen - 1 - n, " %04x=%s/f%u/r%u/%.3s", ci->audio_streams[k].pid,

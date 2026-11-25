@@ -42,6 +42,9 @@ void CBDNavStream::Clear()
 bool CBDNavStream::Start()
 {
 	m_bEndOfStream = FALSE;
+	m_bSegmentEnd = FALSE;
+	m_bDrainedPosted = FALSE;
+	m_rtDelivered = -1;
 	CAMThread::Create();
 	if (FAILED(CAMThread::CallWorker(CMD_INIT))) {
 		Clear();
@@ -50,7 +53,7 @@ bool CBDNavStream::Start()
 
 	// give the navigation some time to produce data for stream probing
 	const DWORD start = ::GetTickCount();
-	while (::GetTickCount() - start < 3000 && m_len < 512 * KILOBYTE && !m_bEndOfStream) {
+	while (::GetTickCount() - start < 3000 && m_len < 512 * KILOBYTE && !m_bEndOfStream && !m_bSegmentEnd) {
 		Sleep(20);
 	}
 	return m_len > 0;
@@ -152,7 +155,7 @@ DWORD CBDNavStream::ThreadProc()
 			case CMD_RUN:
 				Reply(S_OK);
 
-				while (!CheckRequest(nullptr) && !m_bEndOfStream) {
+				while (!CheckRequest(nullptr) && !m_bEndOfStream && !m_bSegmentEnd) {
 					if (!m_SizeComplete && GetPacketsSize() > BDNAV_MAXSTORESIZE) {
 						Sleep(10);
 						continue;
@@ -162,13 +165,20 @@ DWORD CBDNavStream::ThreadProc()
 					bool bFlush = false;
 					markers.clear();
 					const int n = nav.ReadTS(buff.get(), BDNAV_READSIZE, bEvent, bFlush, markers);
+					if (bFlush) {
+						TruncateUnread();
+					}
+					if (n == CBDNavigator::kReadSegmentEnd) {
+						// format change: this graph gets no more data (EOF after the buffered data)
+						m_bSegmentEnd = TRUE;
+						m_EventComplete.Set();
+						BDNavLog(L"stream: end of graph segment (format change)");
+						break;
+					}
 					if (n < 0) {
 						m_bEndOfStream = TRUE;
 						m_EventComplete.Set();
 						break;
-					}
-					if (bFlush) {
-						TruncateUnread();
 					}
 					if (!markers.empty()) {
 						CAutoLock lockM(&m_csMarkers);
@@ -249,10 +259,14 @@ HRESULT CBDNavStream::Read(PBYTE pbBuffer, DWORD dwBytesToRead, BOOL bAlign, LPD
 
 	if (m_pos + len > m_len) {
 		m_SizeComplete = m_pos + len;
-		while (!m_bEndOfStream && m_len < m_SizeComplete && !m_EventComplete.Wait(5));
+		while (!m_bEndOfStream && !m_bSegmentEnd && m_len < m_SizeComplete && !m_EventComplete.Wait(5));
 		m_SizeComplete = 0;
 
-		if (m_bEndOfStream && m_pos >= m_len) {
+		if (m_bSegmentEnd && m_pos >= m_len && !m_bDrainedPosted) {
+			m_bDrainedPosted = TRUE;
+			CBDNavigator::Get().OnSegmentDrained();
+		}
+		if ((m_bEndOfStream || m_bSegmentEnd) && m_pos >= m_len) {
 			if (pdwBytesRead) {
 				*pdwBytesRead = 0;
 			}
@@ -322,7 +336,7 @@ CBDNavReader::CBDNavReader(IUnknown* pUnk, HRESULT* phr)
 
 CBDNavReader::~CBDNavReader()
 {
-	CBDNavigator::Get().SetReader(nullptr);
+	CBDNavigator::Get().ClearReader(this);
 }
 
 REFERENCE_TIME CBDNavReader::GetStreamTimeNow()
@@ -334,6 +348,35 @@ REFERENCE_TIME CBDNavReader::GetStreamTimeNow()
 		}
 	}
 	return m_rtLastStreamTime;
+}
+
+int CBDNavReader::RemainingMs()
+{
+	const REFERENCE_TIME last = m_stream.GetDelivered();
+	if (last < 0) {
+		return -1;
+	}
+	const REFERENCE_TIME d = last - GetStreamTimeNow();
+	return d > 0 ? (int)std::min<REFERENCE_TIME>(d / 10000, 600000) : 0;
+}
+
+bool CBDNavReader::IsPlayedOut()
+{
+	if (!m_stream.IsDrained()) {
+		return false;
+	}
+	const REFERENCE_TIME last = m_stream.GetDelivered();
+	if (last < 0) {
+		return true;
+	}
+	const REFERENCE_TIME now = GetStreamTimeNow();
+	if (now + 300000 >= last) {
+		CString m;
+		m.Format(L"stream: played out (stream %.3f s, last sample %.3f s)", now / 1e7, last / 1e7);
+		BDNavLog(m);
+		return true;
+	}
+	return false;   // within 30 ms of the last sample
 }
 
 STDMETHODIMP CBDNavReader::NonDelegatingQueryInterface(REFIID riid, void** ppv)
@@ -392,6 +435,7 @@ STDMETHODIMP CBDNavReader::Load(LPCOLESTR pszFileName, const AM_MEDIA_TYPE* pmt)
 		BDNavLog(L"CBDNavReader::Load: no active navigation session for " + CString(pszFileName ? pszFileName : L"(null)"));
 		return E_FAIL;
 	}
+	nav.BeginSegment();
 	if (!nav.StartPlayback()) {
 		return E_FAIL;
 	}

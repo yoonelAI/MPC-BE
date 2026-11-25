@@ -19,4 +19,7 @@ IBDNavSource : public IUnknown
 	// of the first packet at/after the marker byte position -> seek bar / time display.
 	STDMETHOD(GetNextMarker)(LONG afterId, LONG* pId, LONGLONG* pPos) PURE;   // S_OK if a marker with id > afterId exists
 	STDMETHOD(SetMarkerTime)(LONG id, REFERENCE_TIME rt) PURE;
+
+	// stream time of the end of the latest packet sent downstream (to know when a graph segment has played out)
+	STDMETHOD(SetDeliveredTime)(REFERENCE_TIME rt) PURE;
 };

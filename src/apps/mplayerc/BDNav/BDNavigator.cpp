@@ -226,7 +226,14 @@ bool CBDNavigator::Open(const CString& path, HWND hNotify, CString& err)
 		m_pendingMarkers.clear();
 		m_bFallbackPosted = false;
 		m_audioNumber = 0;
+		m_bSegmentEnd = false;
+		m_bGraphSig = false;
+		m_carry.clear();
+		m_pgNumber = 0;
+		m_pgEnabled = false;
 	}
+	m_bPgDirty = false;
+	m_bRebuildPending = false;
 	m_audioPid = -1;
 	{
 		CAutoLock lock(&m_csAnchor);
@@ -336,8 +343,13 @@ CString CBDNavigator::PrepareClipInfoPath()
 	}
 	const CString clipW = BDNavUTF8ToW(clip);
 	CString m;
-	m.Format(L"first clip %s (%05d.mpls item %d): %s", clipW.GetString(), m_playlist, m_playitem, BDNavUTF8ToW(desc).GetString());
+	m.Format(L"graph built for clip %s (%05d.mpls item %d): %s", clipW.GetString(), m_playlist, m_playitem, BDNavUTF8ToW(desc).GetString());
 	BDNavLog(m);
+	m_bGraphSig = ClipSig(m_playlist, m_playitem, m_graphSigV, m_graphSigA);
+	{
+		const char* pg = strstr(desc, " PG:");
+		m_graphPG = pg ? atoi(pg + 4) : 0;
+	}
 
 	std::vector<uint8_t> data(16 * 1024 * 1024);
 	const CStringA rel = CStringA("BDMV/CLIPINF/") + clip + ".clpi";
@@ -377,6 +389,15 @@ void CBDNavigator::Close()
 		auto& lib = CBDNavLib::Get();
 		lib.bdnav_set_notify(nav, nullptr, nullptr);
 		lib.bdnav_close(nav);
+		{
+			CAutoLock lock(&m_csNav);
+			if (m_dumpFile) {
+				fclose(m_dumpFile);
+				m_dumpFile = nullptr;
+			}
+			m_dumpSeg = 0;
+			m_dumpBytes = 0;
+		}
 		FlushLibLog();
 		BDNavLog(L"Navigation closed");
 	}
@@ -467,9 +488,29 @@ int CBDNavigator::ReadTS(BYTE* out, int outcap, bool& bEvent, bool& bFlush, std:
 		return -1;
 	}
 
+	if (m_bSegmentEnd) {
+		bFlush = m_bFlushRequest.exchange(false);
+		return kReadSegmentEnd;
+	}
+
 	const int want = (outcap / 6144) * 6144;
 	if (want <= 0) {
 		return 0;
+	}
+
+	if (!m_carry.empty() && (int)m_carry.size() <= outcap) {
+		// first data of this graph segment (read together with the boundary event)
+		const int n = (int)m_carry.size();
+		memcpy(out, m_carry.data(), n);
+		m_carry.clear();
+		DumpData(out, n);
+		bFlush = m_bFlushRequest.exchange(false);
+		if (!m_pendingMarkers.empty()) {
+			markers.insert(markers.end(), m_pendingMarkers.begin(), m_pendingMarkers.end());
+			m_pendingMarkers.clear();
+		}
+		m_total += (unsigned)n;
+		return n;
 	}
 
 	BDNAV_EVENT ev = {};
@@ -479,6 +520,20 @@ int CBDNavigator::ReadTS(BYTE* out, int outcap, bool& bEvent, bool& bFlush, std:
 		HandleEvent(ev);
 		if (ev.event == BDNAV_EV_ENCRYPTED) {
 			return -1;
+		}
+		if (m_bSegmentEnd) {
+			// the data returned with the boundary event belongs to the new clip
+			if (r > 0) {
+				m_carry.assign(out, out + r);
+			}
+			bFlush = m_bFlushRequest.exchange(false);
+			m_bRebuildPending = true;
+			// a user jump (menu button, top menu) into another format: the old data is obsolete -> rebuild now
+			const bool bNow = bFlush || (m_dwLastFlushTick && ::GetTickCount() - m_dwLastFlushTick < 3000);
+			if (m_hNotify) {
+				::PostMessageW(m_hNotify, WM_BDNAV_NOTIFY, kNotifyRebuild, bNow ? 1 : 0);
+			}
+			return kReadSegmentEnd;
 		}
 	}
 	if (r < 0) {
@@ -504,6 +559,7 @@ int CBDNavigator::ReadTS(BYTE* out, int outcap, bool& bEvent, bool& bFlush, std:
 		BDNavLog(m);
 	}
 	m_total += (unsigned)r;
+	DumpData(out, r);
 
 	CheckAutoMenu();
 
@@ -518,6 +574,7 @@ void CBDNavigator::HandleEvent(const BDNAV_EVENT& ev)
 	auto& lib = CBDNavLib::Get();
 	CString extra;
 	bool bJump = false;
+	bool bLog = m_bVerbose;
 
 	switch (ev.event) {
 	case BDNAV_EV_TITLE:
@@ -534,8 +591,24 @@ void CBDNavigator::HandleEvent(const BDNAV_EVENT& ev)
 		extra.Format(L" %05u.mpls (%.1f s, %u chapters)", ev.param, m_playlistDur / 90000.0, ti.chapter_count);
 		bJump = true;
 		UpdateChapters();
+		if (CheckFormatChange(extra)) {
+			bLog = true;
+		}
+		m_bPgDirty = true;   // stream numbers map to other PIDs in the new playlist
 		break;
 	}
+	case BDNAV_EV_PG_TEXTST:
+		m_pgEnabled = ev.param != 0;
+		m_bPgDirty = true;
+		PostNotify();
+		bLog = true;
+		break;
+	case BDNAV_EV_PG_TEXTST_STREAM:
+		m_pgNumber = (ev.param >= 1 && ev.param < 0xFFF) ? (int)ev.param : 0;
+		m_bPgDirty = true;
+		PostNotify();
+		bLog = true;
+		break;
 	case BDNAV_EV_AUDIO_STREAM:
 		if (ev.param >= 1 && ev.param < 0xFF && m_playlist >= 0) {
 			m_audioNumber = (int)ev.param;
@@ -554,6 +627,8 @@ void CBDNavigator::HandleEvent(const BDNAV_EVENT& ev)
 		if (m_playlist >= 0 && lib.bdnav_get_clip_info(m_nav, (uint32_t)m_playlist, ev.param, clip, sizeof(clip), desc, sizeof(desc))) {
 			extra.Format(L" clip %s: %s", BDNavUTF8ToW(clip).GetString(), BDNavUTF8ToW(desc).GetString());
 		}
+		CheckFormatChange(extra);
+		bLog = true;   // clip boundaries are rare and useful in the log
 		break;
 	}
 	case BDNAV_EV_SEEK:
@@ -573,10 +648,10 @@ void CBDNavigator::HandleEvent(const BDNAV_EVENT& ev)
 	if (bJump && m_bUserJumpPending && ::GetTickCount() - m_dwUserActionTick < kUserJumpWindow) {
 		m_bUserJumpPending = false;
 		m_bFlushRequest = true;   // jump requested by the user: drop data buffered for the old position
+		m_dwLastFlushTick = ::GetTickCount();
 		extra += L" [flush]";
 	}
 
-	bool bLog = m_bVerbose;
 	switch (ev.event) {
 	case BDNAV_EV_TITLE: case BDNAV_EV_PLAYLIST: case BDNAV_EV_MENU: case BDNAV_EV_STILL:
 	case BDNAV_EV_END_OF_TITLE: case BDNAV_EV_ERROR: case BDNAV_EV_READ_ERROR: case BDNAV_EV_ENCRYPTED:
@@ -591,6 +666,158 @@ void CBDNavigator::HandleEvent(const BDNAV_EVENT& ev)
 		m.Format(L"event %s %u%s (read %.1f MB)", EventName(ev.event), ev.param, extra.GetString(), m_total / 1048576.0);
 		BDNavLog(m);
 	}
+}
+
+bool CBDNavigator::ClipSig(int playlist, int item, CString& v, CString& a)
+{
+	// m_csNav held. desc: "V: 1011=HEVC/f8 1015=HEVC/f6 A: 1100=LPCM/f1/r1/jpn 1101=AC3/... PG:1 IG:0"
+	v.Empty();
+	a.Empty();
+	char clip[16] = {};
+	char desc[1024] = {};
+	if (playlist < 0 || !CBDNavLib::Get().bdnav_get_clip_info(m_nav, (uint32_t)playlist, (uint32_t)std::max(item, 0), clip, sizeof(clip), desc, sizeof(desc))) {
+		return false;
+	}
+	const CString d = BDNavUTF8ToW(desc);
+	const int iA  = d.Find(L" A:");
+	const int iPG = d.Find(L" PG:");
+	if (iA < 0 || iPG < iA) {
+		return false;
+	}
+	v = d.Mid(2, iA - 2).Trim();
+	int pos = 0;
+	const CString aud = d.Mid(iA + 3, iPG - iA - 3);
+	for (CString t = aud.Tokenize(L" ", pos); !t.IsEmpty(); t = aud.Tokenize(L" ", pos)) {
+		const int slash = t.Find(L'/');
+		a += (a.IsEmpty() ? L"" : L" ") + (slash > 0 ? t.Left(slash) : t);   // "1100=LPCM"
+	}
+	return true;
+}
+
+bool CBDNavigator::CheckFormatChange(CString& extra)
+{
+	// m_csNav held
+	CString v, a;
+	if (m_bSegmentEnd || !m_bGraphSig || !ClipSig(m_playlist, m_playitem, v, a)) {
+		return false;
+	}
+	bool bRebuild = (v != m_graphSigV);
+	int pos = 0;
+	for (CString t = a.Tokenize(L" ", pos); !t.IsEmpty(); t = a.Tokenize(L" ", pos)) {
+		if ((L" " + m_graphSigA + L" ").Find(L" " + t + L" ") < 0) {
+			bRebuild = true;   // a new audio stream (the current graph has no pin for it)
+		}
+	}
+	// a clip with PG subtitles while the graph has none: rebuild so that they can be shown
+	char clip[16] = {};
+	char desc[1024] = {};
+	if (!bRebuild && CBDNavLib::Get().bdnav_get_clip_info(m_nav, (uint32_t)m_playlist, (uint32_t)std::max(m_playitem, 0), clip, sizeof(clip), desc, sizeof(desc))) {
+		const char* pg = strstr(desc, " PG:");
+		if (pg && atoi(pg + 4) > 0 && m_graphPG == 0) {
+			bRebuild = true;
+		}
+	}
+	if (!bRebuild) {
+		return false;
+	}
+	m_bSegmentEnd = true;
+	m_graphSigV = v;
+	m_graphSigA = a;
+	{
+		const char* pg = strstr(desc, " PG:");
+		m_graphPG = pg ? atoi(pg + 4) : 0;   // desc may be empty if bRebuild was decided before reading it
+		if (!desc[0]) {
+			char d2[1024] = {};
+			if (CBDNavLib::Get().bdnav_get_clip_info(m_nav, (uint32_t)m_playlist, (uint32_t)std::max(m_playitem, 0), clip, sizeof(clip), d2, sizeof(d2))) {
+				const char* pg2 = strstr(d2, " PG:");
+				m_graphPG = pg2 ? atoi(pg2 + 4) : 0;
+			}
+		}
+	}
+	QueueMarker();     // time anchor for the first data of the new graph
+	extra += L" [format change -> rebuild graph]";
+	return true;
+}
+
+int CBDNavigator::GetDiscAudioPid()
+{
+	CAutoLock lock(&m_csNav);
+	if (!m_nav || m_audioNumber < 1 || m_playlist < 0) {
+		return -1;
+	}
+	return CBDNavLib::Get().bdnav_get_stream_pid(m_nav, (uint32_t)m_playlist, (uint32_t)std::max(m_playitem, 0), 0, m_audioNumber);
+}
+
+int CBDNavigator::GetDiscSubtitlePid(bool& bEnabled)
+{
+	CAutoLock lock(&m_csNav);
+	bEnabled = m_pgEnabled;
+	if (!m_nav || m_pgNumber < 1 || m_playlist < 0) {
+		return -1;
+	}
+	return CBDNavLib::Get().bdnav_get_stream_pid(m_nav, (uint32_t)m_playlist, (uint32_t)std::max(m_playitem, 0), 1, m_pgNumber);
+}
+
+bool CBDNavigator::IsSegmentPlayedOut()
+{
+	CAutoLock lock(&m_csReader);
+	return !m_pReader || m_pReader->IsPlayedOut();
+}
+
+int CBDNavigator::SegmentRemainingMs()
+{
+	CAutoLock lock(&m_csReader);
+	return m_pReader ? m_pReader->RemainingMs() : -1;
+}
+
+void CBDNavigator::ClearReader(CBDNavReader* pReader)
+{
+	// the old graph's reader may be destroyed after the new one registered itself
+	CAutoLock lock(&m_csReader);
+	if (m_pReader == pReader) {
+		m_pReader = nullptr;
+	}
+}
+
+void CBDNavigator::DumpNewSegment()
+{
+	// m_csNav held
+	if (m_dumpFile) {
+		fclose(m_dumpFile);
+		m_dumpFile = nullptr;
+	}
+	if (!::PathFileExistsW(BDNavGetDataDir() + L"\\bdnav_dump.txt") || m_dumpBytes > 4000ull * 1024 * 1024) {
+		return;
+	}
+	const CString dir = BDNavGetDataDir() + L"\\dump";
+	::CreateDirectoryW(dir, nullptr);
+	CString path;
+	path.Format(L"%s\\seg_%02d.m2ts", dir.GetString(), ++m_dumpSeg);
+	m_dumpFile = _wfopen(path, L"wb");
+	CString m;
+	m.Format(L"dump: %s%s", path.GetString(), m_dumpFile ? L"" : L" (open failed)");
+	BDNavLog(m);
+}
+
+void CBDNavigator::DumpData(const BYTE* p, int n)
+{
+	if (m_dumpFile && n > 0) {
+		fwrite(p, 1, n, m_dumpFile);
+		m_dumpBytes += (unsigned)n;
+	}
+}
+
+void CBDNavigator::BeginSegment()
+{
+	{
+		CAutoLock lock(&m_csNav);
+		m_bSegmentEnd = false;
+		DumpNewSegment();
+	}
+	m_bRebuildPending = false;
+	CAutoLock lock(&m_csAnchor);
+	m_anchors.clear();
+	m_bSeekPending = false;
 }
 
 void CBDNavigator::UpdateChapters()
@@ -697,6 +924,9 @@ void CBDNavigator::AddAnchor(REFERENCE_TIME rtStream, const Marker& m)
 bool CBDNavigator::GetTitlePos(REFERENCE_TIME& pos, REFERENCE_TIME& dur)
 {
 	pos = dur = 0;
+	if (m_title == 0) {
+		return true;   // top menu: no seek bar
+	}
 	const REFERENCE_TIME now = GetStreamTime();
 	CAutoLock lock(&m_csAnchor);
 

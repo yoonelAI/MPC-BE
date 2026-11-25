@@ -33,6 +33,9 @@ class CBDNavStream
 	CAMEvent            m_EventComplete;
 	volatile ULONGLONG  m_SizeComplete = 0;
 	volatile BOOL       m_bEndOfStream = FALSE;
+	volatile BOOL       m_bSegmentEnd = FALSE;   // format change: no more data for this graph
+	volatile BOOL       m_bDrainedPosted = FALSE;
+	volatile LONGLONG   m_rtDelivered = -1;
 
 	volatile LONG       m_flushGen = 0;
 	volatile LONGLONG   m_flushPos = 0;
@@ -78,6 +81,9 @@ public:
 	LONG GetFlushGeneration(LONGLONG* pPos) { if (pPos) *pPos = m_flushPos; return m_flushGen; }
 	HRESULT GetNextMarker(LONG afterId, LONG* pId, LONGLONG* pPos);
 	HRESULT SetMarkerTime(LONG id, REFERENCE_TIME rt);
+	void SetDelivered(REFERENCE_TIME rt) { m_rtDelivered = rt; }
+	REFERENCE_TIME GetDelivered() const { return m_rtDelivered; }
+	bool IsDrained() const { return !!m_bDrainedPosted; }
 	DWORD Alignment() override;
 	void Lock() override;
 	void Unlock() override;
@@ -116,4 +122,10 @@ public:
 	STDMETHODIMP_(LONG) GetFlushGeneration(LONGLONG* pFlushPos) { return m_stream.GetFlushGeneration(pFlushPos); }
 	STDMETHODIMP GetNextMarker(LONG afterId, LONG* pId, LONGLONG* pPos) { return m_stream.GetNextMarker(afterId, pId, pPos); }
 	STDMETHODIMP SetMarkerTime(LONG id, REFERENCE_TIME rt) { return m_stream.SetMarkerTime(id, rt); }
+	STDMETHODIMP SetDeliveredTime(REFERENCE_TIME rt) { m_stream.SetDelivered(rt); return S_OK; }
+
+	// graph segment played out: all data read and the stream time passed the last delivered sample
+	bool IsPlayedOut();
+	// ms of delivered data not yet played, -1 = unknown
+	int  RemainingMs();
 };

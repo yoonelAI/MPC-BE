@@ -1742,6 +1742,7 @@ void CMpegSplitterFilter::BDNavResync()
 		target = 0;
 	}
 	m_rtResyncTo = target;
+	m_rtBDNavLastOut = INVALID_TIME;
 	m_bDiscontinuitySent.clear();
 	m_BDNavMarkTagged.clear();
 
