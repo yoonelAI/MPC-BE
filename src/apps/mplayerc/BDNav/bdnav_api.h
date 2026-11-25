@@ -16,7 +16,7 @@
 extern "C" {
 #endif
 
-#define BDNAV_API_VERSION 3
+#define BDNAV_API_VERSION 4
 
 #ifdef BDNAV_BUILD
 #define BDNAV_EXPORT __declspec(dllexport)
@@ -165,6 +165,7 @@ BDNAV_EXPORT int         bdnav_menu_call(BDNAV* nav, int64_t pts90k);
 BDNAV_EXPORT void        bdnav_set_scr(BDNAV* nav, int64_t pts90k);
 
 BDNAV_EXPORT uint64_t    bdnav_tell_time(BDNAV* nav);                  /* 90 kHz */
+BDNAV_EXPORT int64_t     bdnav_seek_time(BDNAV* nav, uint64_t tick90k);   /* seek in current title, returns new position or <0 */
 BDNAV_EXPORT int64_t     bdnav_seek_chapter(BDNAV* nav, uint32_t chapter);
 BDNAV_EXPORT uint32_t    bdnav_get_current_chapter(BDNAV* nav);
 BDNAV_EXPORT int         bdnav_get_playlist_info(BDNAV* nav, uint32_t playlist, BDNAV_TITLE_INFO* info);

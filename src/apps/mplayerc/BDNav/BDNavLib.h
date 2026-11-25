@@ -24,6 +24,7 @@
 	X(bdnav_menu_call)              \
 	X(bdnav_set_scr)                \
 	X(bdnav_tell_time)              \
+	X(bdnav_seek_time)              \
 	X(bdnav_seek_chapter)           \
 	X(bdnav_get_current_chapter)    \
 	X(bdnav_get_playlist_info)      \
