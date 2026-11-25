@@ -10,6 +10,7 @@ on:
       - 'docs/**'
       - 'bdmenu/tools/**'
       - '.github/workflows/bdprobe.yml'
+      - '.github/workflows/bdlibs.yml'
 
 concurrency:
   group: bdmenu-main-${{ github.ref }}

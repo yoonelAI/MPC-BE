@@ -1,0 +1,48 @@
+name: BDLibs Package
+
+# Packs the static libbluray build (vcpkg x64-windows-static: include + lib) so that
+# bdnav.dll can be compiled on a local machine without vcpkg.
+on:
+  workflow_dispatch:
+  push:
+    branches: [ bdmenu-qw ]
+    paths: [ '.github/workflows/bdlibs.yml' ]
+
+jobs:
+  pack:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    steps:
+      - name: Cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-bin
+          key: vcpkg-libbluray-x64-static-v1
+
+      - name: Install libbluray (static) via vcpkg
+        shell: pwsh
+        run: |
+          $env:VCPKG_DEFAULT_BINARY_CACHE = "$env:RUNNER_TEMP\vcpkg-bin"
+          New-Item -ItemType Directory -Force $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" install libbluray:x64-windows-static
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Pack include + lib
+        shell: pwsh
+        run: |
+          $v = "$env:VCPKG_INSTALLATION_ROOT\installed\x64-windows-static"
+          New-Item -ItemType Directory -Force bdlibs | Out-Null
+          Copy-Item -Recurse "$v\include" bdlibs\include
+          New-Item -ItemType Directory -Force bdlibs\lib | Out-Null
+          Copy-Item "$v\lib\*.lib" bdlibs\lib
+          & "$env:VCPKG_INSTALLATION_ROOT\vcpkg.exe" list > bdlibs\vcpkg-list.txt
+          Get-ChildItem bdlibs\lib | Select-Object Name, Length | Format-Table -AutoSize | Out-String -Width 200
+          7z a -tzip -mx9 bdlibs-x64-static.zip .\bdlibs\* | Out-Null
+          Get-Item bdlibs-x64-static.zip | Select-Object Name, Length
+
+      - name: Upload
+        uses: actions/upload-artifact@v7
+        with:
+          name: bdlibs-x64-static
+          path: bdlibs-x64-static.zip
+          compression-level: 0
