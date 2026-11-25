@@ -1,7 +1,7 @@
 # MPC-BE BDMenu 项目移交文档
 
 > 每轮开发后更新本文件（顶部"当前状态"和末尾"开发记录"）。换 agent / 换对话时先读这里。
-> 最后更新：2026-11-26 00:35（Asia/Shanghai） 版本 P1.4-dev6（用户测试通过，待打包/推送）
+> 最后更新：2026-11-26 00:45（Asia/Shanghai） 版本 **P1.4（已发布：已打包、已推送 c897005）**　下一步：P2 BD-J
 
 ## 1. 目标（用户需求）
 - 基于 **MPC-BE 1.9.3**（最新稳定版）改内核，实现**蓝光 ISO / BDMV 先出菜单、鼠标可操作**；参考 mpv 0.42（PR #18080）和 Yaozhil/mpv-Yaozhi。
@@ -14,7 +14,7 @@
 - **格式切换改为"不重建、动态切换解码器"**（用户 11-25 23:26 要求以后提醒）：当前 P1.4 遇视频/音频格式变化（H.264↔HEVC、新增音轨/PG）会整条重建播放链路，切换处停顿 1–2 秒、末帧停留。
   目标：保留图，分离器输出 pin 动态换媒体类型（QueryAccept/ReceiveConnection 或 IPinConnection 动态重连），解码器 MPC Video Decoder 支持动态格式；失败再回退为重建。已加入用户 To-dos 和记忆。
 
-## 2. 当前状态（P1.3）
+## 2. 当前状态（P1.4）
 | 功能 | 状态 |
 |---|---|
 | HDMV 蓝光菜单（ISO/BDMV/index.bdmv） | ✅ KARA 测试盘全部正常 |
@@ -26,13 +26,13 @@
 | 章节：PageUp/PageDown、导航→章节、进度条标记 | ✅ 用户确认；刻度需开 选项→播放器→界面→显示章节标记（MPC-BE 原生，默认关） |
 | 中文输入法下快捷键（VK_PROCESSKEY） | ✅ 主窗口/视频窗口禁用 IME + PreTranslateMessage 还原真实按键（待用户复测） |
 | 语言包版本检查 | ✅ 只比较 1.9.3，不比较修订号（修订号=git 提交数，推送后会变） |
-| 光盘切音轨 → 播放器同步 | ✅ 已编译，未测（KARA 只有 1 条音轨） |
+| 光盘切音轨 → 播放器同步 | ✅ 已编译；进正片时按光盘选择的音轨 PID 同步（未专门测） |
 | 崩溃保护（blocklist）、开始 20 秒内读盘失败自动回退 | ✅ 已编译，未测 |
 | 日志精简（bdnav_debug.txt 打开详细日志，2MB 轮换） | ✅ |
 | DVD 菜单 | ✅ MPC-BE 原生，用户确认可用 |
-| 菜单与正片编码不同的盘（重建链路） | 🔶 P1.4-dev 已编译待测（倩女幽魂3：H.264 片头/菜单 ↔ HEVC 4K 正片） |
-| PG 字幕与导航同步 | 🔶 P1.4-dev2：PG_TEXTST/PG_TEXTST_STREAM → 按 PID 选分离器字幕流（SelectSubtilesAMStream，m_iSubtitleSel=0），关→m_iSubtitleSel=-1；待测 |
-| BD-J（Java 菜单） | ❌ 自动回退原版；需要 BD-J 测试盘 + 精简 JRE |
+| 菜单与正片编码不同的盘（重建链路） | ✅ P1.4 倩女幽魂3 UHD（H.264 片头/菜单 ↔ HEVC 4K 正片）用户测通：菜单背景有声、Play Film 立即开始、片头完整、正片菜单/进度条/章节正常；切换处末帧停 1–2 秒 |
+| PG 字幕与导航同步 | ✅ P1.4：PG_TEXTST/PG_TEXTST_STREAM → 按 PID 选分离器字幕流；倩女幽魂正片字幕用户确认有 |
+| BD-J（Java 菜单） | ❌ 自动回退原版（Odyssey 盘用户确认：直接播正片、章节有效、不卡）；已有 BD-J 测试盘 The Odyssey 2026 UHD，P2 需精简 JRE + libbluray BD-J |
 
 ## 3. 目录结构（E:\AI\MPC-BE-BDMenu）
 ```
@@ -47,7 +47,9 @@ builds\local\          ★ 本机编译后的测试目录（mpc-be64.exe + bdnav
 builds\logs_archive\   历次测试日志
 release\               交付压缩包（portable / patch）
 upstream\, src\        早期只读源码快照/镜像（已被 repo\ 取代，勿再改）
-*.iso                  测试盘：KARA...Disc1.iso（HDMV, 弹出式菜单, LPCM 16/24bit）；www.98t.la@HAVD_112A.iso（DVD）
+*.iso                  测试盘：KARA...Disc1.iso（HDMV, 弹出式菜单, LPCM 16/24bit）；倩女幽魂 III UHD（HDMV，格式切换）；
+                       The Odyssey 2026 UHD（BD-J，P2 用）；www.98t.la@HAVD_112A.iso（DVD）
+tmp\                   抽出的片段（cgs3_00003/00004.m2ts，诊断用，可删）
 ```
 其他：Vita.and.Virginia ISO 在 `C:\Users\...\Downloads`（HDMV 14 标题，00005.m2ts 部分数据全零，菜单 IG 缺失，暂不可用）。
 
@@ -106,6 +108,8 @@ upstream\, src\        早期只读源码快照/镜像（已被 repo\ 取代，�
 - dev5 修正：libbluray 读盘远快于播放（KARA 23 秒片头 9 秒就读完），固定 8 秒保底会截掉片头 → 保底改为"剩余未播时长 + 1.5 秒"（CBDNavReader::RemainingMs，暂停时自动延长，硬上限 2 分钟）。
 
 ## 6. 交付
+- 当前发布：**P1.4**（`release\MPC-BE.1.9.3-BDMenu-P1.4.x64-portable.zip` 25.3MB / `...-P1.4.x64-patch.zip` 25.2MB，exe 与语言包版本 1.9.3.31，源码提交 c897005）。
+  发布流程：更新 `bdmenu\packaging\BDMenu-README.txt` → `push` → `full`（exe+Lang 同修订号）→ AI 用 Python 从 builds\local 打包（排除 bdnav_*/日志/ini，portable 另写干净 mpc-be64.ini，patch 去掉 MPCBEShellExt64.dll 并加 release_scripts）。
 - `release\MPC-BE.1.9.3-BDMenu-<版本>.x64-portable.zip`：绿色版（含 mpc-be64.ini → 设置保存在程序目录）。
 - `release\MPC-BE.1.9.3-BDMenu-<版本>.x64-patch.zip`：安装版补丁（files\ + install_patch.cmd/uninstall_patch.cmd，自动备份到 安装目录\BDMenu_backup）。
   安装版路径 `C:\Program Files\MPC-BE x64`。脚本模板在 `repo\bdmenu\release_scripts\`。
@@ -152,6 +156,8 @@ upstream\, src\        早期只读源码快照/镜像（已被 repo\ 取代，�
 - dev6（诊断）：数据目录有 `bdnav_dump.txt` 时，每个播放链路段送给分离器的 TS 数据写到 `dump\seg_NN.m2ts`（总上限 4GB；含 carry 数据）；
   PLAYITEM 事件现在总写日志。已在 builds\local 放了 bdnav_dump.txt。下一步：AI 比对 seg_01 与 00003+00004 原文件（截断/多余数据/顺序），
   用户用 Pot 播 seg_01 看是否有拖影 → 区分"送出的数据有问题（libbluray/读取）"还是"分离器/解码处理 PTS 回跳有问题"。**排查完删除 bdnav_dump.txt。**
+- 11-26 00:45 **P1.4 发布**：README 更新为 P1.4 → push c897005（ae22d68..c897005）→ full 编译（exe/Lang 1.9.3.31）→ 打包 portable（102 项）/patch（103 项），zip 校验通过。
+  下一步 P2 BD-J（The Odyssey 2026 UHD：First Play/Top Menu=BD-J，90 标题=56 BD-J+34 HDMV，JAR 签名、证书齐全）。
 - 11-26 00:28 结果：用户用 dev6 测 2 次**都没有拖影**，Pot 播 seg_01 也正常。AI 逐包比对：seg_01 = 00003 全部 + 00004 去掉开头 4 个 PSI 包（PAT/PMT/SIT/PCR，libbluray 正常行为），无截断/多余/乱序 → **数据正确**。
   dev6 与 dev5 的播放逻辑相同（只加了转储和日志）。差别在重建时机：dev5 那次是 "played out" 正好在最后一帧时重建；这次 played out 没触发（容差 30ms < 一帧 41.7ms），
   是在"剩余+1.5 秒"保底时重建，最后一帧先静止约 1.5 秒。推断拖影是**最后一帧还在显示时就拆渲染器**造成的偶发画面（字被拉伸），不是数据或解码问题。
