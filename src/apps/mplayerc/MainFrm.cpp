@@ -2571,6 +2571,10 @@ void CMainFrame::OnTimer(UINT_PTR nIDEvent)
 
 						m_pMS->GetDuration(&rtDur);
 						m_pMS->GetCurrentPosition(&rtNow);
+						if (m_bBDNavActive) {
+							// BDMenu: position/duration of the current Blu-ray title (playlist)
+							CBDNavigator::Get().GetTitlePos(rtNow, rtDur);
+						}
 
 						if (m_abRepeatPositionBEnabled && rtNow >= m_abRepeatPositionB) {
 							PerformABRepeat();
@@ -9719,6 +9723,11 @@ void CMainFrame::OnNavigateSkip(UINT nID)
 		if (DWORD nChapters = m_pCB->ChapGetCount()) {
 			REFERENCE_TIME rtCur;
 			m_pMS->GetCurrentPosition(&rtCur);
+			if (m_bBDNavActive) {
+				// BDMenu: chapters are in title time
+				REFERENCE_TIME rtDur = 0;
+				CBDNavigator::Get().GetTitlePos(rtCur, rtDur);
+			}
 
 			REFERENCE_TIME rt = rtCur;
 			CComBSTR name;
@@ -9745,6 +9754,9 @@ void CMainFrame::OnNavigateSkip(UINT nID)
 
 				REFERENCE_TIME rtDur;
 				m_pMS->GetDuration(&rtDur);
+				if (m_bBDNavActive) {
+					rtDur = m_wndSeekBar.GetRange();
+				}
 				CString strOSD;
 				CString chapName;
 				if (name.Length()) {
@@ -9754,6 +9766,10 @@ void CMainFrame::OnNavigateSkip(UINT nID)
 				m_OSD.DisplayMessage(OSD_TOPLEFT, strOSD, 3000);
 				return;
 			}
+		}
+
+		if (m_bBDNavActive) {
+			return; // BDMenu: no file skipping inside a Blu-ray navigation session
 		}
 
 		if (nID == ID_NAVIGATE_SKIPBACK) {
@@ -14948,6 +14964,8 @@ void CMainFrame::CloseMediaPrivate()
 	m_bBDNavActive = false;
 	m_bBDNavMenuShown = false;
 	m_pBDMenuSubPic.Release();
+	g_bBDNavSubpicNoQueue = false;
+	g_bBDNavNoQueueApplied = false;
 
 	DLog(L"CMainFrame::CloseMediaPrivate() : end");
 }
@@ -17149,7 +17167,13 @@ void CMainFrame::SeekTo(REFERENCE_TIME rtPos, bool bShowOSD/* = true*/)
 		}
 	}
 
-	if (GetPlaybackMode() == PM_FILE) {
+	if (GetPlaybackMode() == PM_FILE && m_bBDNavActive) {
+		// BDMenu: seek inside the current Blu-ray title, the navigation keeps running
+		if (fs == State_Stopped) {
+			SendMessageW(WM_COMMAND, ID_PLAY_PAUSE);
+		}
+		CBDNavigator::Get().SeekTitle(rtPos);
+	} else if (GetPlaybackMode() == PM_FILE) {
 		REFERENCE_TIME total = 0;
 		if (m_pMS) {
 			m_pMS->GetDuration(&total);
@@ -21340,6 +21364,8 @@ BOOL CMainFrame::OpenBDNav(const CString& path, BOOL bAddRecent)
 	m_bBDNavActive = true;
 	m_bBDNavMenuShown = false;
 	m_strBDNavOrigPath = fn;
+	g_bBDNavSubpicNoQueue = true;
+	g_bBDNavNoQueueApplied = false;
 
 	if (bAddRecent) {
 		AddRecent(fn);
@@ -21356,11 +21382,73 @@ BOOL CMainFrame::OpenBDNav(const CString& path, BOOL bAddRecent)
 
 LRESULT CMainFrame::OnBDNavNotify(WPARAM wParam, LPARAM lParam)
 {
-	CBDNavigator::Get().NotifyHandled();
-	if (m_bBDNavActive) {
+	if (wParam == CBDNavigator::kNotifyFallback) {
+		// navigation failed right at the start: play this disc the original way
+		if (m_bBDNavActive) {
+			CloseMedia();
+			m_bBDNavSkip = true;
+			OpenCurPlaylistItem(INVALID_TIME, FALSE);
+		}
+		return 0;
+	}
+
+	auto& nav = CBDNavigator::Get();
+	nav.NotifyHandled();
+	if (m_bBDNavActive && m_eMediaLoadState == MLS_LOADED) {
 		BDNavUpdateMenu(false);
+		BDNavUpdateChapters();
+		const int pid = nav.TakeAudioPid();
+		if (pid > 0) {
+			BDNavSyncAudio(pid);
+		}
 	}
 	return 0;
+}
+
+void CMainFrame::BDNavUpdateChapters()
+{
+	std::vector<REFERENCE_TIME> chapters;
+	if (!m_pCB || !CBDNavigator::Get().GetChapters(chapters, m_nBDNavChapGen)) {
+		return;
+	}
+	m_pCB->ChapRemoveAll();
+	for (size_t i = 0; i < chapters.size(); i++) {
+		CString name;
+		name.Format(L"%02u", (unsigned)(i + 1));
+		m_pCB->ChapAppend(chapters[i], name);
+	}
+	m_pCB->ChapSort();
+	m_wndSeekBar.SetChapterBag(m_pCB);
+	m_OSD.SetChapterBag(m_pCB);
+	m_wndSeekBar.Invalidate();
+}
+
+void CMainFrame::BDNavSyncAudio(int pid)
+{
+	// the disc selected an audio stream (e.g. from its audio menu): select it in the player as well
+	CComQIPtr<IAMStreamSelect> pSS = m_pSwitcherFilter.p;
+	DWORD cStreams = 0;
+	if (!pSS || FAILED(pSS->Count(&cStreams))) {
+		return;
+	}
+	CString id1, id2;
+	id1.Format(L"(%04x)", pid);
+	id2.Format(L"(%04X)", pid);
+	for (DWORD i = 0; i < cStreams; i++) {
+		DWORD dwFlags = 0;
+		WCHAR* pszName = nullptr;
+		if (SUCCEEDED(pSS->Info(i, nullptr, &dwFlags, nullptr, nullptr, &pszName, nullptr, nullptr)) && pszName) {
+			const CString name(pszName);
+			CoTaskMemFree(pszName);
+			if (name.Find(id1) >= 0 || name.Find(id2) >= 0) {
+				if (!(dwFlags & (AMSTREAMSELECTINFO_ENABLED | AMSTREAMSELECTINFO_EXCLUSIVE))) {
+					pSS->Enable(i, AMSTREAMSELECTENABLE_ENABLE);
+					BDNavLog(L"audio: disc selected " + name);
+				}
+				return;
+			}
+		}
+	}
 }
 
 void CMainFrame::BDNavUpdateMenu(bool bHideTimer)
@@ -21376,20 +21464,25 @@ void CMainFrame::BDNavUpdateMenu(bool bHideTimer)
 			m_pBDMenuSubPic = (ISubPicProvider*)DNew CBDMenuSubPicProvider();
 		}
 		nav.SetOverlayOn(true);
+		const bool bSingle = static_cast<CBDMenuSubPicProvider*>(m_pBDMenuSubPic.p)->IsSingle();
 		if (!m_bBDNavMenuShown) {
 			m_bBDNavMenuShown = true;
 			m_pCAP->SetSubPicProvider(m_pBDMenuSubPic);
 			m_pCAP->Invalidate();
+		} else if (bSingle) {
+			// synchronous queue: the next presented frame re-renders the menu
+			m_pCAP->Invalidate();
 		} else {
 			// keep the window that is on screen now, re-render the following ones
-			REFERENCE_TIME rt = 0;
-			if (m_pMS) {
-				m_pMS->GetCurrentPosition(&rt);
-			}
+			// keep the windows that are (about to be) on screen, re-render the following ones
+			REFERENCE_TIME rt = nav.GetStreamTime();
 			if (rt < 0) {
 				rt = 0;
 			}
-			m_pCAP->Invalidate((rt / BDMENU_WINDOW + 2) * BDMENU_WINDOW);
+			m_pCAP->Invalidate(((rt + 300000) / BDMENU_WINDOW + 1) * BDMENU_WINDOW);   // 30-50 ms ahead
+		}
+		if (GetMediaState() != State_Running) {
+			m_pCAP->Paint(false);   // paused / still: show the change now
 		}
 	} else if (m_bBDNavMenuShown) {
 		if (!bHideTimer) {
@@ -21413,6 +21506,7 @@ void CMainFrame::BDNavLogGraph()
 	if (!m_pGB) {
 		return;
 	}
+	BDNavLog(g_bBDNavNoQueueApplied ? L"menu overlay: synchronous subpicture queue" : L"menu overlay: buffered subpicture queue (windowed)");
 	BeginEnumFilters(m_pGB, pEF, pBF) {
 		BDNavLog(L"graph: " + CString(GetFilterName(pBF)));
 		if (CComQIPtr<IAMStreamSelect> pSS = pBF.p) {

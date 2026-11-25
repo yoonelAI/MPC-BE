@@ -7,6 +7,7 @@
 
 #include <vector>
 #include <list>
+#include <deque>
 #include <atomic>
 #include "BDNavLib.h"
 
@@ -14,6 +15,12 @@
 #define WM_BDNAV_NOTIFY (WM_APP + 0x0B0D)
 
 struct SubPicDesc;
+
+// In navigation mode the video renderer gets a synchronous subpicture queue (no pre-rendering):
+// the menu is drawn for exactly the frame that is presented -> no gaps after jumps, no lag.
+extern bool g_bBDNavSubpicNoQueue;   // set by CMainFrame before the graph is built
+extern bool g_bBDNavNoQueueApplied;  // set when a renderer was created with that setting
+class CBDNavReader;
 
 class CBDNavigator
 {
@@ -29,10 +36,31 @@ public:
 	const CString& GetLabel() const      { return m_strLabel; }
 	void NotifyHandled() { m_bNotifyPending = false; }
 
+	struct Marker {
+		uint64_t title90k;   // position in the title (playlist), 90 kHz
+		uint64_t dur90k;     // playlist duration, 90 kHz
+		int      playlist;
+		uint32_t seq;        // marker sequence number
+	};
+
 	// source filter (graph / reader thread)
 	bool StartPlayback();
-	int  ReadTS(BYTE* out, int outcap, bool& bEvent);   // 192-byte BD-TS packets; <0 = end
-	bool TakeFlushRequest() { return m_bFlushRequest.exchange(false); }
+	// 192-byte BD-TS packets; <0 = end. bFlush / markers apply to the position BEFORE the returned data.
+	int  ReadTS(BYTE* out, int outcap, bool& bEvent, bool& bFlush, std::vector<Marker>& markers);
+	void SetReader(CBDNavReader* pReader);
+	void AddAnchor(REFERENCE_TIME rtStream, const Marker& m);
+
+	// seek bar (main thread)
+	REFERENCE_TIME GetStreamTime();
+	bool GetTitlePos(REFERENCE_TIME& pos, REFERENCE_TIME& dur);
+	bool SeekTitle(REFERENCE_TIME pos);
+
+	// chapters of the current playlist (title time); returns true if changed since 'gen'
+	bool GetChapters(std::vector<REFERENCE_TIME>& chapters, uint32_t& gen);
+	// audio stream selected by the disc (PID), consumed by the main thread; -1 = none
+	int  TakeAudioPid() { return m_audioPid.exchange(-1); }
+	// navigation failed right at the start -> main thread reopens with the original playback
+	static const WPARAM kNotifyFallback = 1;
 	// writes BDMV\CLIPINF\<clip>.clpi of the clip being played into the temp folder and
 	// returns the matching virtual ...\BDMV\STREAM\<clip>.m2ts path (lets the MPEG splitter read clip info)
 	CString PrepareClipInfoPath();
@@ -62,7 +90,8 @@ private:
 	void PostNotify();
 	bool WriteMarker(CString& err);
 	int  DetectRegion();
-	void UserAction() { m_dwUserActionTick = ::GetTickCount(); }
+	void UserAction() { m_dwUserActionTick = ::GetTickCount(); m_bUserJumpPending = true; CancelSeekPending(); }
+	void CancelSeekPending() { CAutoLock lock(&m_csAnchor); m_bSeekPending = false; }
 
 	CCritSec   m_csNav;       // guards m_nav and all bdnav_* calls
 	CCritSec   m_csPlane;     // guards the plane copy
@@ -79,7 +108,9 @@ private:
 	std::list<CString> m_tempFiles;
 	bool       m_bPlaying = false;
 
-	// IG plane copy (last non-empty content)
+	// IG plane copy (last non-empty content) + converted copy for the subpicture
+	// (premultiplied, inverted alpha: ready to be copied row by row)
+	std::vector<uint32_t> m_planeConv;
 	std::vector<uint32_t> m_plane;
 	int        m_planeW = 0, m_planeH = 0;
 	RECT       m_planeBox = {};
@@ -103,4 +134,53 @@ private:
 	DWORD      m_dwLibLogTick = 0;
 	DWORD      m_dwUserActionTick = 0;
 	bool       m_bAlignWarned = false;
+	bool       m_bUserJumpPending = false;
+	bool       m_bVerbose = false;
+	DWORD      m_dwPlayTick = 0;
+	bool       m_bFallbackPosted = false;
+	std::atomic<int> m_audioPid{ -1 };
+	int        m_audioNumber = 0;
+	std::vector<REFERENCE_TIME> m_chapters;   // under m_csAnchor
+	uint32_t   m_chaptersGen = 0;
+	void UpdateChapters();                    // m_csNav held
+
+	// crash protection: a disc that crashed the player is played the original way next time
+	CString    m_strLockFile;
+	static bool IsBlocked(const CString& root);
+	static void CheckCrashLock();
+	std::vector<Marker> m_pendingMarkers;   // under m_csNav
+	void QueueMarker();
+
+	CCritSec   m_csReader;
+	CBDNavReader* m_pReader = nullptr;
+
+	struct Anchor {
+		REFERENCE_TIME rt;      // stream time
+		REFERENCE_TIME title;   // title time at rt
+		REFERENCE_TIME dur;
+		int            playlist;
+		uint32_t       seq;
+	};
+	uint32_t   m_markerSeq = 0;            // under m_csNav
+	// user seek in progress: show the target position until its data plays
+	bool           m_bSeekPending = false;  // under m_csAnchor
+	uint32_t       m_seekSeq = 0;
+	REFERENCE_TIME m_seekPos = 0;
+	DWORD          m_seekTick = 0;
+	CCritSec   m_csAnchor;
+	std::deque<Anchor> m_anchors;
+
+	// UI thread waiting for m_csNav: the reader thread yields (no starvation of mouse/keys)
+	std::atomic<int> m_uiWaiting{ 0 };
+	struct CUILock {
+		CBDNavigator& n;
+		CUILock(CBDNavigator& nav) : n(nav) { n.m_uiWaiting++; n.m_csNav.Lock(); }
+		~CUILock() { n.m_csNav.Unlock(); n.m_uiWaiting--; }
+	};
+
+	// latency trace
+	DWORD      m_dwInputTick = 0;
+	DWORD      m_dwPlaneTick = 0;
+	uint32_t   m_lastRenderedVersion = 0;
+	int        m_traceBudget = 300;
 };

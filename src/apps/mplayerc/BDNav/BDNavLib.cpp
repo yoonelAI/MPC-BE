@@ -132,13 +132,66 @@ CString BDNavGetDiscRoot(const CString& path)
 
 static CCritSec g_csLog;
 
+CString BDNavGetDataDir()
+{
+	static CString dir;
+	if (!dir.IsEmpty()) {
+		return dir;
+	}
+	// exe folder (portable) if writable, otherwise %LOCALAPPDATA%\MPC-BE-BDMenu (installed in Program Files)
+	const CString exeDir = GetExeDir();
+	const CString test = exeDir + L"\\bdnav_write.tmp";
+	HANDLE h = ::CreateFileW(test, GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_TEMPORARY | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+	if (h != INVALID_HANDLE_VALUE) {
+		::CloseHandle(h);
+		dir = exeDir;
+	} else {
+		WCHAR path[MAX_PATH] = {};
+		if (::GetEnvironmentVariableW(L"LOCALAPPDATA", path, MAX_PATH)) {
+			dir = CString(path) + L"\\MPC-BE-BDMenu";
+		} else {
+			WCHAR tmp[MAX_PATH] = {};
+			::GetTempPathW(MAX_PATH, tmp);
+			dir = CString(tmp) + L"MPC-BE-BDMenu";
+		}
+		::CreateDirectoryW(dir, nullptr);
+	}
+	return dir;
+}
+
+bool BDNavIsVerbose()
+{
+	static int verbose = -1;
+	if (verbose < 0) {
+		verbose = (::PathFileExistsW(BDNavGetDataDir() + L"\\bdnav_debug.txt") || ::PathFileExistsW(GetExeDir() + L"\\bdnav_debug.txt")) ? 1 : 0;
+	}
+	return verbose == 1;
+}
+
+static CString GetLogFile()
+{
+	static bool rotated = false;
+	const CString logfile = BDNavGetDataDir() + L"\\bdnav.log";
+	if (!rotated) {
+		rotated = true;
+		WIN32_FILE_ATTRIBUTE_DATA fad = {};
+		if (::GetFileAttributesExW(logfile, GetFileExInfoStandard, &fad)
+				&& (((ULONGLONG)fad.nFileSizeHigh << 32) | fad.nFileSizeLow) > 2 * 1024 * 1024) {
+			const CString old = BDNavGetDataDir() + L"\\bdnav.old.log";
+			::DeleteFileW(old);
+			::MoveFileW(logfile, old);
+		}
+	}
+	return logfile;
+}
+
 void BDNavLogRaw(const char* utf8, size_t len)
 {
 	if (!utf8 || !len) {
 		return;
 	}
 	CAutoLock lock(&g_csLog);
-	const CString logfile = GetExeDir() + L"\\bdnav.log";
+	const CString logfile = GetLogFile();
 	FILE* f = nullptr;
 	if (_wfopen_s(&f, logfile, L"ab") == 0 && f) {
 		fwrite(utf8, 1, len, f);
@@ -149,7 +202,7 @@ void BDNavLogRaw(const char* utf8, size_t len)
 void BDNavLog(const CString& line)
 {
 	CAutoLock lock(&g_csLog);
-	const CString logfile = GetExeDir() + L"\\bdnav.log";
+	const CString logfile = GetLogFile();
 	FILE* f = nullptr;
 	if (_wfopen_s(&f, logfile, L"ab") == 0 && f) {
 		_fseeki64(f, 0, SEEK_END);

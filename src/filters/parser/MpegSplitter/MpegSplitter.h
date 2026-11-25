@@ -27,6 +27,7 @@
 #include "MpegSplitterSettingsWnd.h"
 #include "DSUtil/AudioParser.h"
 #include <ITrackInfo.h>
+#include <IBDNavSource.h>
 #include <deque>
 
 #define MpegSplitterName L"MPC MPEG Splitter"
@@ -81,6 +82,13 @@ class __declspec(uuid("DC257063-045F-4BE2-BD5B-E12279C464F0"))
 	std::unique_ptr<CPacket> m_MasterDVStreamPacket;
 
 	std::vector<SyncPoint> m_sps;
+
+	// BDMenu: Blu-ray navigation source
+	CComPtr<IBDNavSource> m_pBDNavSource;
+	LONG m_nBDNavFlushGen = 0;
+	LONG m_nBDNavMarkDone = 0;
+	DWORD m_dwBDNavMarkTick = 0;
+	void BDNavResync();
 
 	HRESULT CreateOutputs(IAsyncReader* pAsyncReader);
 	void	ReadClipInfo(LPCOLESTR pszFileName);

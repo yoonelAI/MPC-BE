@@ -69,7 +69,7 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD reason, LPVOID reserved)
 		InitializeCriticalSection(&g_log_cs);
 		DisableThreadLibraryCalls(hinst);
 		bd_set_debug_handler(log_cb);
-		bd_set_debug_mask(DBG_CRIT | DBG_HDMV | DBG_GC | DBG_NAV | DBG_BLURAY);
+		bd_set_debug_mask(DBG_CRIT);
 	} else if (reason == DLL_PROCESS_DETACH) {
 		bd_set_debug_handler(NULL);
 		DeleteCriticalSection(&g_log_cs);
@@ -109,6 +109,11 @@ struct bdnav_s {
 };
 
 BDNAV_EXPORT int bdnav_api_version(void) { return BDNAV_API_VERSION; }
+
+BDNAV_EXPORT void bdnav_set_debug(int level)
+{
+	bd_set_debug_mask(level > 0 ? (DBG_CRIT | DBG_HDMV | DBG_GC | DBG_NAV | DBG_BLURAY) : DBG_CRIT);
+}
 
 BDNAV_EXPORT const char* bdnav_lib_version(void)
 {
@@ -449,6 +454,34 @@ BDNAV_EXPORT int bdnav_get_clip_info(BDNAV* nav, uint32_t playlist, uint32_t ite
 	}
 	bd_free_title_info(ti);
 	return 1;
+}
+
+BDNAV_EXPORT int bdnav_get_chapters(BDNAV* nav, uint32_t playlist, uint64_t* starts90k, int max)
+{
+	if (!nav) return 0;
+	BLURAY_TITLE_INFO* ti = bd_get_playlist_info(nav->bd, playlist, 0);
+	if (!ti) return 0;
+	int n = (int)ti->chapter_count;
+	if (starts90k) {
+		for (int i = 0; i < n && i < max; i++) starts90k[i] = ti->chapters[i].start;
+	}
+	bd_free_title_info(ti);
+	return n;
+}
+
+BDNAV_EXPORT int bdnav_get_stream_pid(BDNAV* nav, uint32_t playlist, uint32_t item, int kind, int number)
+{
+	if (!nav || number < 1) return -1;
+	BLURAY_TITLE_INFO* ti = bd_get_playlist_info(nav->bd, playlist, 0);
+	if (!ti) return -1;
+	int pid = -1;
+	if (item < ti->clip_count) {
+		const BLURAY_CLIP_INFO* ci = &ti->clips[item];
+		if (kind == 0 && number <= ci->audio_stream_count) pid = ci->audio_streams[number - 1].pid;
+		if (kind == 1 && number <= ci->pg_stream_count)    pid = ci->pg_streams[number - 1].pid;
+	}
+	bd_free_title_info(ti);
+	return pid;
 }
 
 BDNAV_EXPORT int bdnav_read_file(BDNAV* nav, const char* path, uint8_t* buf, int buflen)

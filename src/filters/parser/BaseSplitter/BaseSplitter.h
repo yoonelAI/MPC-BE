@@ -108,6 +108,10 @@ protected:
 	//int m_iNetworkTimeout = NETWORK_TIMEOUT_DEF; // 2000..20000 ms
 
 	REFERENCE_TIME m_rtOffset = INVALID_TIME;
+	volatile LONGLONG m_rtResyncTo = INVALID_TIME; // BDMenu: re-time the next packet to this stream time
+	volatile LONG     m_nBDNavMarkArm = 0;              // BDMenu: armed time marker id
+	volatile LONGLONG m_rtBDNavMarkTime = INVALID_TIME; // BDMenu: stream time of the first marked packet
+	std::list<DWORD>  m_BDNavMarkTagged;
 
 protected:
 	enum {CMD_EXIT, CMD_SEEK};

@@ -1140,7 +1140,7 @@ __int64 CMpegSplitterFilter::SeekBD(const REFERENCE_TIME rt)
 
 // BDMenu: the libbluray navigation source (CBDNavReader in mpc-be) reports a virtual
 // ...\BDMV\STREAM\<clip>.m2ts file name with the matching .clpi written next to it.
-static CString GetBDNavSourceFileName(IAsyncReader* pAsyncReader)
+static CString GetBDNavSourceFileName(IAsyncReader* pAsyncReader, IBDNavSource** ppNav = nullptr)
 {
 	static const GUID CLSID_BDNavReader = { 0x6b1c2a51, 0x8e1f, 0x4c55, { 0x9d, 0x2b, 0xbd, 0x0a, 0x7e, 0x11, 0xc0, 0xde } };
 
@@ -1162,6 +1162,10 @@ static CString GetBDNavSourceFileName(IAsyncReader* pAsyncReader)
 				CoTaskMemFree(name);
 			}
 		}
+		if (ppNav) {
+			CComQIPtr<IBDNavSource> pNav = pi.pFilter;
+			*ppNav = pNav.Detach();
+		}
 	}
 	pi.pFilter->Release();
 	return fn;
@@ -1179,7 +1183,10 @@ HRESULT CMpegSplitterFilter::CreateOutputs(IAsyncReader* pAsyncReader)
 		CString partName = GetPartFilename(pAsyncReader);
 		bool bBDNav = false;
 		if (partName.IsEmpty()) {
-			partName = GetBDNavSourceFileName(pAsyncReader); // BDMenu: Blu-ray navigation source
+			partName = GetBDNavSourceFileName(pAsyncReader, &m_pBDNavSource); // BDMenu: Blu-ray navigation source
+			if (m_pBDNavSource) {
+				m_nBDNavFlushGen = m_pBDNavSource->GetFlushGeneration(nullptr);
+			}
 			bBDNav = !partName.IsEmpty();
 		}
 		ReadClipInfo(partName);
@@ -1666,6 +1673,37 @@ bool CMpegSplitterFilter::DemuxLoop()
 	while (SUCCEEDED(hr) && !CheckRequest(nullptr)) {
 		hr = DemuxNextPacket(rtStartOffset);
 
+		if (m_pBDNavSource) {
+			LONGLONG flushPos = 0;
+			const LONG gen = m_pBDNavSource->GetFlushGeneration(&flushPos);
+			if (gen != m_nBDNavFlushGen && m_pFile->GetPos() >= flushPos) {
+				m_nBDNavFlushGen = gen;
+				BDNavResync();
+			}
+
+			if (!m_nBDNavMarkArm) {
+				LONG id = 0;
+				LONGLONG mpos = 0;
+				if (m_pBDNavSource->GetNextMarker(m_nBDNavMarkDone, &id, &mpos) == S_OK && m_pFile->GetPos() >= mpos) {
+					m_BDNavMarkTagged.clear();
+					m_rtBDNavMarkTime = INVALID_TIME;
+					m_dwBDNavMarkTick = GetTickCount();
+					m_nBDNavMarkArm = id;
+				}
+			} else {
+				REFERENCE_TIME rt = m_rtBDNavMarkTime;
+				if (rt == INVALID_TIME && GetTickCount() - m_dwBDNavMarkTick > 3000) {
+					CRefTime now; // no timed packet came through: estimate
+					rt = SUCCEEDED(StreamTime(now)) ? now.m_time + 5000000 : 0;
+				}
+				if (rt != INVALID_TIME) {
+					m_pBDNavSource->SetMarkerTime(m_nBDNavMarkArm, rt);
+					m_nBDNavMarkDone = m_nBDNavMarkArm;
+					m_nBDNavMarkArm = 0;
+				}
+			}
+		}
+
 		if (FAILED(m_pFile->GetLastReadError())) {
 			break;
 		}
@@ -1680,6 +1718,38 @@ bool CMpegSplitterFilter::DemuxLoop()
 	pPackets.clear();
 
 	return true;
+}
+
+void CMpegSplitterFilter::BDNavResync()
+{
+	// BDMenu: the disc jumped (user action). Drop everything that is queued for the old
+	// position and continue the new data at the current playback time.
+	pPackets.clear();
+	m_MVCExtensionQueue.clear();
+	m_MVCBaseQueue.clear();
+	m_MasterDVStreamPacket.reset();
+	m_rtGlobalPCRTimeStamp = INVALID_TIME;
+
+	DeliverBeginFlush();
+	DeliverEndFlush();
+
+	REFERENCE_TIME target = 0;
+	CRefTime now;
+	if (SUCCEEDED(StreamTime(now))) {
+		target = now.m_time + 2000000; // 200 ms lead
+	}
+	if (target < 0) {
+		target = 0;
+	}
+	m_rtResyncTo = target;
+	m_bDiscontinuitySent.clear();
+	m_BDNavMarkTagged.clear();
+
+	for (const auto pPin : m_pActivePins) {
+		pPin->DeliverNewSegment(m_rtStart, m_rtStop, m_dRate);
+	}
+
+	DLog(L"CMpegSplitterFilter::BDNavResync() : flushed, new data at stream time %I64d", target);
 }
 
 bool CMpegSplitterFilter::BuildPlaylist(LPCWSTR pszFileName, CHdmvClipInfo::CPlaylist& Items, BOOL bReadMVCExtension/* = TRUE*/)

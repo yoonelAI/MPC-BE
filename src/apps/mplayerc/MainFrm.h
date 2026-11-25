@@ -1332,6 +1332,9 @@ public:
 	bool m_bBDNavActive = false;
 	bool m_bBDNavMenuShown = false;
 	bool m_bBDNavSkip = false;
+	uint32_t m_nBDNavChapGen = 0;
+	void BDNavSyncAudio(int pid);
+	void BDNavUpdateChapters();
 	CString m_strBDNavOrigPath;
 	CComPtr<ISubPicProvider> m_pBDMenuSubPic;
 	BOOL OpenBDNav(const CString& path, BOOL bAddRecent);

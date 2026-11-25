@@ -1,0 +1,16 @@
+﻿MPC-BE BDMenu 补丁（让已安装的 MPC-BE x64 拥有和绿色版相同的功能）
+=================================================================
+
+适用：64 位 MPC-BE 安装版（默认 C:\Program Files\MPC-BE x64）。
+补丁内容就是绿色版的程序文件（mpc-be64.exe 1.9.3+BDMenu、bdnav.dll、语言包、着色器等），
+不含 MPCBEShellExt64.dll（资源管理器扩展，被系统占用且没有改动）。安装后版本号为 1.9.3。
+
+方法一（推荐）：关闭播放器 → 右键 install_patch.cmd → 以管理员身份运行
+  - 自动备份原文件到 安装目录\BDMenu_backup（只备份一次，保留最早的原版）
+  - 安装目录不是默认位置时：install_patch.cmd "D:\你的\MPC-BE x64"
+方法二（手动）：关闭播放器 → 把 files 文件夹里的全部内容复制到安装目录，覆盖
+
+卸载：uninstall_patch.cmd（从备份恢复）；或只删除安装目录里的 bdnav.dll 即恢复原版行为。
+
+设置：安装版的设置仍在原来的位置（注册表或安装目录 ini），补丁不改动。
+日志：%LOCALAPPDATA%\MPC-BE-BDMenu\bdnav.log

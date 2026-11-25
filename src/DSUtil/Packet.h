@@ -39,6 +39,7 @@ public:
 	AM_MEDIA_TYPE* pmt     = nullptr;
 
 	UINT32 Flag            = 0;
+	bool bBDNavMark        = false; // BDMenu: first timed packet after a navigation time marker
 
 	~CPacket();
 

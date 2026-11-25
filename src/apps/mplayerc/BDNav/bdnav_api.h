@@ -16,7 +16,7 @@
 extern "C" {
 #endif
 
-#define BDNAV_API_VERSION 4
+#define BDNAV_API_VERSION 5
 
 #ifdef BDNAV_BUILD
 #define BDNAV_EXPORT __declspec(dllexport)
@@ -148,6 +148,7 @@ typedef void (*bdnav_notify_cb)(void* ctx, int plane, int reason);
 BDNAV_EXPORT int         bdnav_api_version(void);
 BDNAV_EXPORT const char* bdnav_lib_version(void);          /* "libbluray x.y.z" */
 BDNAV_EXPORT int         bdnav_get_log(char* buf, int len, int clear); /* last libbluray log lines */
+BDNAV_EXPORT void        bdnav_set_debug(int level);       /* 0 = errors only, 1 = verbose libbluray log */
 
 BDNAV_EXPORT BDNAV*      bdnav_open(const char* utf8_path, char* err, int errlen); /* folder (disc root) or .iso */
 BDNAV_EXPORT void        bdnav_close(BDNAV* nav);
@@ -170,6 +171,8 @@ BDNAV_EXPORT int64_t     bdnav_seek_chapter(BDNAV* nav, uint32_t chapter);
 BDNAV_EXPORT uint32_t    bdnav_get_current_chapter(BDNAV* nav);
 BDNAV_EXPORT int         bdnav_get_playlist_info(BDNAV* nav, uint32_t playlist, BDNAV_TITLE_INFO* info);
 BDNAV_EXPORT int         bdnav_get_clip_info(BDNAV* nav, uint32_t playlist, uint32_t item, char* clip_id, int idlen, char* desc, int desclen); /* clip_id "00001" + stream summary */
+BDNAV_EXPORT int         bdnav_get_chapters(BDNAV* nav, uint32_t playlist, uint64_t* starts90k, int max); /* chapter count */
+BDNAV_EXPORT int         bdnav_get_stream_pid(BDNAV* nav, uint32_t playlist, uint32_t item, int kind, int number); /* kind 0 audio, 1 PG; number 1..N; pid or -1 */
 BDNAV_EXPORT int         bdnav_read_file(BDNAV* nav, const char* path, uint8_t* buf, int buflen); /* path relative to disc root; bytes or -1 */
 
 /* plane access: always pair with bdnav_unlock_plane() when lock returned 1 */

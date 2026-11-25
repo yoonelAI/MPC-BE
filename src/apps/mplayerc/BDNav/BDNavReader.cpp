@@ -7,9 +7,9 @@
 #include "BDNavReader.h"
 #include "BDNavigator.h"
 
-#define BDNAV_MAXSTORESIZE  (8 * MEGABYTE)   // buffered TS data before the reader thread waits
+#define BDNAV_MAXSTORESIZE  (3 * MEGABYTE)   // buffered TS data before the reader thread waits
 #define BDNAV_KEEPBEHIND    (512 * KILOBYTE) // data kept behind the read position
-#define BDNAV_READSIZE      (6144 * 32)       // 32 aligned units = 1024 BD-TS packets
+#define BDNAV_READSIZE      (6144 * 8)        // 8 aligned units = 256 BD-TS packets (short lock hold)
 
 //
 // CBDNavStream
@@ -93,7 +93,15 @@ void CBDNavStream::TruncateUnread()
 	CAutoLock cPacketLock(&m_csPacketsLock);
 
 	const ULONGLONG cut = ((m_pos + 191) / 192) * 192;
+	{
+		CAutoLock lockM(&m_csMarkers);
+		while (!m_markers.empty() && m_markers.back().pos > cut) {
+			m_markers.pop_back();
+		}
+	}
 	if (cut >= m_len) {
+		m_flushPos = (LONGLONG)m_len;
+		InterlockedIncrement(&m_flushGen);
 		return;
 	}
 	const ULONGLONG dropped = m_len - cut;
@@ -104,9 +112,11 @@ void CBDNavStream::TruncateUnread()
 		m_packets.back().m_end = cut;
 	}
 	m_len = cut;
+	m_flushPos = (LONGLONG)cut;
+	InterlockedIncrement(&m_flushGen);
 
 	CString msg;
-	msg.Format(L"stream: dropped %.1f MB of buffered data after jump", dropped / 1048576.0);
+	msg.Format(L"stream: dropped %.1f MB of buffered data after jump, flush #%ld at %llu", dropped / 1048576.0, m_flushGen, cut);
 	BDNavLog(msg);
 }
 
@@ -123,6 +133,7 @@ DWORD CBDNavStream::ThreadProc()
 
 	auto& nav = CBDNavigator::Get();
 	auto buff = std::make_unique<BYTE[]>(BDNAV_READSIZE);
+	std::vector<CBDNavigator::Marker> markers;
 
 	for (;;) {
 		m_RequestCmd = GetRequest();
@@ -148,14 +159,25 @@ DWORD CBDNavStream::ThreadProc()
 					}
 
 					bool bEvent = false;
-					const int n = nav.ReadTS(buff.get(), BDNAV_READSIZE, bEvent);
+					bool bFlush = false;
+					markers.clear();
+					const int n = nav.ReadTS(buff.get(), BDNAV_READSIZE, bEvent, bFlush, markers);
 					if (n < 0) {
 						m_bEndOfStream = TRUE;
 						m_EventComplete.Set();
 						break;
 					}
-					if (nav.TakeFlushRequest()) {
+					if (bFlush) {
 						TruncateUnread();
+					}
+					if (!markers.empty()) {
+						CAutoLock lockM(&m_csMarkers);
+						for (const auto& mk : markers) {
+							m_markers.push_back({ m_nextMarkerId++, m_len, mk.title90k, mk.dur90k, mk.playlist, mk.seq });
+						}
+						while (m_markers.size() > 64) {
+							m_markers.pop_front();
+						}
 					}
 					if (n > 0) {
 						Append(buff.get(), (UINT)n);
@@ -168,6 +190,38 @@ DWORD CBDNavStream::ThreadProc()
 	}
 
 	return 0;
+}
+
+HRESULT CBDNavStream::GetNextMarker(LONG afterId, LONG* pId, LONGLONG* pPos)
+{
+	CAutoLock lockM(&m_csMarkers);
+	for (const auto& m : m_markers) {
+		if (m.id > afterId) {
+			if (pId) *pId = m.id;
+			if (pPos) *pPos = (LONGLONG)m.pos;
+			return S_OK;
+		}
+	}
+	return S_FALSE;
+}
+
+HRESULT CBDNavStream::SetMarkerTime(LONG id, REFERENCE_TIME rt)
+{
+	CBDNavigator::Marker mk = {};
+	{
+		CAutoLock lockM(&m_csMarkers);
+		auto it = std::find_if(m_markers.begin(), m_markers.end(), [id](const CMarker& m) { return m.id == id; });
+		if (it == m_markers.end()) {
+			return E_INVALIDARG;
+		}
+		mk.title90k = it->title90k;
+		mk.dur90k   = it->dur90k;
+		mk.playlist = it->playlist;
+		mk.seq      = it->seq;
+		m_markers.erase(m_markers.begin(), it + 1);
+	}
+	CBDNavigator::Get().AddAnchor(rt, mk);
+	return S_OK;
 }
 
 HRESULT CBDNavStream::SetPointer(LONGLONG llPos)
@@ -266,12 +320,29 @@ CBDNavReader::CBDNavReader(IUnknown* pUnk, HRESULT* phr)
 	}
 }
 
+CBDNavReader::~CBDNavReader()
+{
+	CBDNavigator::Get().SetReader(nullptr);
+}
+
+REFERENCE_TIME CBDNavReader::GetStreamTimeNow()
+{
+	if (m_State == State_Running) {
+		CRefTime t;
+		if (SUCCEEDED(StreamTime(t))) {
+			m_rtLastStreamTime = t.m_time;
+		}
+	}
+	return m_rtLastStreamTime;
+}
+
 STDMETHODIMP CBDNavReader::NonDelegatingQueryInterface(REFIID riid, void** ppv)
 {
 	CheckPointer(ppv, E_POINTER);
 
 	return
 		QI(IFileSourceFilter)
+		QI(IBDNavSource)
 		__super::NonDelegatingQueryInterface(riid, ppv);
 }
 
@@ -293,7 +364,7 @@ STDMETHODIMP CBDNavReader::Stop()
 	if (m_stream.ThreadExists()) {
 		m_stream.CallWorker(CBDNavStream::CMD_STOP);
 	}
-	return S_OK;
+	return __super::Stop();
 }
 
 STDMETHODIMP CBDNavReader::Pause()
@@ -302,7 +373,8 @@ STDMETHODIMP CBDNavReader::Pause()
 	if (m_stream.ThreadExists()) {
 		m_stream.CallWorker(CBDNavStream::CMD_RUN);
 	}
-	return S_OK;
+	GetStreamTimeNow();
+	return __super::Pause();
 }
 
 STDMETHODIMP CBDNavReader::Run(REFERENCE_TIME tStart)
@@ -310,7 +382,7 @@ STDMETHODIMP CBDNavReader::Run(REFERENCE_TIME tStart)
 	if (m_stream.ThreadExists()) {
 		m_stream.CallWorker(CBDNavStream::CMD_RUN);
 	}
-	return S_OK;
+	return __super::Run(tStart);
 }
 
 STDMETHODIMP CBDNavReader::Load(LPCOLESTR pszFileName, const AM_MEDIA_TYPE* pmt)
@@ -329,6 +401,7 @@ STDMETHODIMP CBDNavReader::Load(LPCOLESTR pszFileName, const AM_MEDIA_TYPE* pmt)
 	}
 
 	// virtual ...\BDMV\STREAM\<clip>.m2ts path: the MPEG splitter reads the clip info (stream types) next to it
+	nav.SetReader(this);
 	m_fn = nav.PrepareClipInfoPath();
 	if (m_fn.IsEmpty()) {
 		m_fn = pszFileName;

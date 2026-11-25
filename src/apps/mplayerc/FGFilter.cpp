@@ -484,7 +484,17 @@ HRESULT CFGFilterVideoRenderer::Create(IBaseFilter** ppBF, std::list<CComQIPtr<I
 			pCAP->SetExtraSettings(&ExtraSets);
 		}
 		else {
-			pCAP->SetSubpicSettings(&GetRenderersSettings().SubpicSets);
+			extern bool g_bBDNavSubpicNoQueue;
+			extern bool g_bBDNavNoQueueApplied;
+			if (g_bBDNavSubpicNoQueue) {
+				// BDMenu: synchronous subpicture queue for the Blu-ray menu overlay
+				SubpicSettings sets = GetRenderersSettings().SubpicSets;
+				sets.nCount = 0;
+				pCAP->SetSubpicSettings(&sets);
+				g_bBDNavNoQueueApplied = true;
+			} else {
+				pCAP->SetSubpicSettings(&GetRenderersSettings().SubpicSets);
+			}
 			pCAP->SetExtraSettings(&GetRenderersSettings().ExtraSets);
 		}
 

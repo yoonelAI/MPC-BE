@@ -25,6 +25,7 @@
 #include "BaseSplitterParserOutputPin.h"
 
 #include "DSUtil/AudioParser.h"
+#include <basestruct.h>
 #include "DSUtil/H264Nalu.h"
 #include "DSUtil/MediaDescription.h"
 
@@ -834,8 +835,35 @@ HRESULT CBaseSplitterParserOutputPin::ParseHDMVLPCM(std::unique_ptr<CPacket>& p)
 
 	HRESULT hr = S_OK;
 
-	if (ParseHdmvLPCMHeader(p->data())) {
+	audioframe_t aframe;
+	if (ParseHdmvLPCMHeader(p->data(), &aframe)) {
+		// BDMenu: in a Blu-ray navigation stream the LPCM format can change between clips
+		// (e.g. 16-bit intro, 24-bit main title). Signal the new format to the decoder.
+		if (!p->pmt && m_mt.subtype == MEDIASUBTYPE_HDMV_LPCM_AUDIO
+				&& m_mt.formattype == FORMAT_WaveFormatEx && m_mt.cbFormat >= sizeof(WAVEFORMATEX_HDMV_LPCM)) {
+			const auto* wfe = (const WAVEFORMATEX_HDMV_LPCM*)m_mt.pbFormat;
+			const BYTE channel_conf = p->data()[2] >> 4;
+			if (wfe->nChannels != aframe.channels || wfe->nSamplesPerSec != (DWORD)aframe.samplerate
+					|| wfe->wBitsPerSample != aframe.param1 || wfe->channel_conf != channel_conf) {
+				CMediaType mt(m_mt);
+				auto* w = (WAVEFORMATEX_HDMV_LPCM*)mt.pbFormat;
+				w->nChannels       = (WORD)aframe.channels;
+				w->nSamplesPerSec  = (DWORD)aframe.samplerate;
+				w->wBitsPerSample  = (WORD)aframe.param1;
+				w->channel_conf    = channel_conf;
+				w->nBlockAlign     = w->nChannels * w->wBitsPerSample / 8;
+				w->nAvgBytesPerSec = w->nBlockAlign * w->nSamplesPerSec;
+				DLog(L"CBaseSplitterParserOutputPin::ParseHDMVLPCM() : format change -> %u Hz, %u ch, %u bit", w->nSamplesPerSec, w->nChannels, w->wBitsPerSample);
+				p->pmt = CreateMediaType(&mt);
+				m_mt = mt;
+			}
+		}
 		p->RemoveHead(4);
+		// keep whole sample blocks only (a cut packet must not shift the channel/sample alignment)
+		const size_t blk = (size_t)((aframe.channels + 1) & ~1) * (aframe.param1 == 16 ? 2 : 3);
+		if (blk && p->size() % blk) {
+			p->resize(p->size() - p->size() % blk);
+		}
 		hr = __super::DeliverPacket(std::move(p));
 	}
 

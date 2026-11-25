@@ -6,11 +6,15 @@
 #include "stdafx.h"
 #include "BDNavigator.h"
 #include "SubPic/ISubPic.h"
+#include "BDNavReader.h"
 
 static const uint64_t kLongTitle90k   = 10ull * 60 * 90000;   // >= 10 min: treat as main feature
 static const DWORD    kAutoMenuDelay  = 2500;                 // ms of playback before auto menu
 static const unsigned long long kAutoMenuBytes = 8ull * 1024 * 1024;
-static const DWORD    kUserJumpWindow = 4000;                 // ms after user input: jumps flush the buffer
+static const DWORD    kUserJumpWindow = 15000;                // ms after user input: jumps flush the buffer
+
+bool g_bBDNavSubpicNoQueue  = false;
+bool g_bBDNavNoQueueApplied = false;
 
 CBDNavigator& CBDNavigator::Get()
 {
@@ -22,6 +26,63 @@ CBDNavigator::~CBDNavigator()
 {
 	// process exit: the dll may already be unloading, don't call into it
 	m_nav = nullptr;
+	if (!m_strLockFile.IsEmpty()) {
+		::DeleteFileW(m_strLockFile);   // normal exit is not a crash
+	}
+}
+
+static CString LockFilePath()  { return BDNavGetDataDir() + L"\\bdnav_session.lock"; }
+static CString BlockFilePath() { return BDNavGetDataDir() + L"\\bdnav_blocklist.txt"; }
+
+static CString ReadSmallFile(const CString& path)
+{
+	CString s;
+	FILE* f = nullptr;
+	if (_wfopen_s(&f, path, L"rb") == 0 && f) {
+		char buf[16384] = {};
+		const size_t n = fread(buf, 1, sizeof(buf) - 1, f);
+		fclose(f);
+		buf[n] = 0;
+		s = BDNavUTF8ToW(buf[0] == '\xEF' ? buf + 3 : buf);
+	}
+	return s;
+}
+
+void CBDNavigator::CheckCrashLock()
+{
+	// a lock file left behind means the player did not exit normally while a disc was in navigation mode
+	const CString lock = LockFilePath();
+	if (!::PathFileExistsW(lock)) {
+		return;
+	}
+	CString root = ReadSmallFile(lock);
+	root.Trim();
+	::DeleteFileW(lock);
+	if (root.IsEmpty() || IsBlocked(root)) {
+		return;
+	}
+	FILE* f = nullptr;
+	if (_wfopen_s(&f, BlockFilePath(), L"ab") == 0 && f) {
+		const CStringA line = BDNavWToUTF8(root) + "\r\n";
+		fwrite(line.GetString(), 1, line.GetLength(), f);
+		fclose(f);
+	}
+	BDNavLog(L"previous session did not end normally -> menus disabled for: " + root);
+}
+
+bool CBDNavigator::IsBlocked(const CString& root)
+{
+	const CString list = ReadSmallFile(BlockFilePath());
+	int pos = 0;
+	CString line = list.Tokenize(L"\r\n", pos);
+	while (!line.IsEmpty()) {
+		line.Trim();
+		if (!line.IsEmpty() && line.CompareNoCase(root) == 0) {
+			return true;
+		}
+		line = list.Tokenize(L"\r\n", pos);
+	}
+	return false;
 }
 
 static CString SanitizeFileName(CString s)
@@ -90,7 +151,15 @@ bool CBDNavigator::Open(const CString& path, HWND hNotify, CString& err)
 		return false;
 	}
 
+	m_bVerbose = BDNavIsVerbose();
+	lib.bdnav_set_debug(m_bVerbose ? 1 : 0);
+
 	const CString root = BDNavGetDiscRoot(path);
+	CheckCrashLock();
+	if (IsBlocked(root)) {
+		err = L"disabled for this disc after a crash (delete bdnav_blocklist.txt to retry)";
+		return false;
+	}
 	char buf[2048] = {};
 	BDNAV* nav = lib.bdnav_open(BDNavWToUTF8(root), buf, sizeof(buf));
 	if (!nav) {
@@ -153,6 +222,18 @@ bool CBDNavigator::Open(const CString& path, HWND hNotify, CString& err)
 		m_dwLibLogTick = ::GetTickCount();
 		m_dwUserActionTick = 0;
 		m_bAlignWarned = false;
+		m_bUserJumpPending = false;
+		m_pendingMarkers.clear();
+		m_bFallbackPosted = false;
+		m_audioNumber = 0;
+	}
+	m_audioPid = -1;
+	{
+		CAutoLock lock(&m_csAnchor);
+		m_anchors.clear();
+		m_bSeekPending = false;
+		m_chapters.clear();
+		m_chaptersGen++;
 	}
 	{
 		CAutoLock lock(&m_csPlane);
@@ -179,6 +260,14 @@ bool CBDNavigator::Open(const CString& path, HWND hNotify, CString& err)
 		m_strLabel.GetString(), di.num_titles, di.num_hdmv_titles, region, root.GetString());
 	BDNavLog(msg);
 	FlushLibLog();
+
+	m_strLockFile = LockFilePath();
+	FILE* f = nullptr;
+	if (_wfopen_s(&f, m_strLockFile, L"wb") == 0 && f) {
+		const CStringA u8 = BDNavWToUTF8(root);
+		fwrite(u8.GetString(), 1, u8.GetLength(), f);
+		fclose(f);
+	}
 	return true;
 }
 
@@ -303,6 +392,10 @@ void CBDNavigator::Close()
 		::DeleteFileW(m_strMarker);
 		m_strMarker.Empty();
 	}
+	if (!m_strLockFile.IsEmpty()) {
+		::DeleteFileW(m_strLockFile);
+		m_strLockFile.Empty();
+	}
 	for (const auto& fn : m_tempFiles) {
 		::DeleteFileW(fn);
 	}
@@ -357,13 +450,18 @@ bool CBDNavigator::StartPlayback()
 		return false;
 	}
 	m_bPlaying = true;
+	m_dwPlayTick = ::GetTickCount();
 	BDNavLog(L"bd_play() OK, First Play started");
 	return true;
 }
 
-int CBDNavigator::ReadTS(BYTE* out, int outcap, bool& bEvent)
+int CBDNavigator::ReadTS(BYTE* out, int outcap, bool& bEvent, bool& bFlush, std::vector<Marker>& markers)
 {
 	bEvent = false;
+	bFlush = false;
+	for (int i = 0; m_uiWaiting > 0 && i < 200; i++) {
+		Sleep(1);
+	}
 	CAutoLock lock(&m_csNav);
 	if (!m_nav || !m_bPlaying) {
 		return -1;
@@ -386,8 +484,19 @@ int CBDNavigator::ReadTS(BYTE* out, int outcap, bool& bEvent)
 	if (r < 0) {
 		BDNavLog(L"bd_read() error, end of navigation");
 		FlushLibLog();
+		if (!m_bMenuSeen && !m_bFallbackPosted && ::GetTickCount() - m_dwPlayTick < 20000 && m_hNotify) {
+			m_bFallbackPosted = true;
+			BDNavLog(L"navigation failed at the start -> original playback");
+			::PostMessageW(m_hNotify, WM_BDNAV_NOTIFY, kNotifyFallback, 0);
+		}
 		return -1;
 	}
+	bFlush = m_bFlushRequest.exchange(false);
+	if (!m_pendingMarkers.empty()) {
+		markers.insert(markers.end(), m_pendingMarkers.begin(), m_pendingMarkers.end());
+		m_pendingMarkers.clear();
+	}
+
 	if ((r % 192) && !m_bAlignWarned) {
 		m_bAlignWarned = true;
 		CString m;
@@ -424,13 +533,26 @@ void CBDNavigator::HandleEvent(const BDNAV_EVENT& ev)
 		m_playlistDur = lib.bdnav_get_playlist_info(m_nav, ev.param, &ti) ? ti.duration : 0;
 		extra.Format(L" %05u.mpls (%.1f s, %u chapters)", ev.param, m_playlistDur / 90000.0, ti.chapter_count);
 		bJump = true;
+		UpdateChapters();
 		break;
 	}
+	case BDNAV_EV_AUDIO_STREAM:
+		if (ev.param >= 1 && ev.param < 0xFF && m_playlist >= 0) {
+			m_audioNumber = (int)ev.param;
+			const int pid = lib.bdnav_get_stream_pid(m_nav, (uint32_t)m_playlist, (uint32_t)std::max(m_playitem, 0), 0, m_audioNumber);
+			if (pid > 0) {
+				m_audioPid = pid;
+				extra.Format(L" pid 0x%04x", pid);
+				PostNotify();
+			}
+		}
+		break;
 	case BDNAV_EV_PLAYITEM: {
 		m_playitem = (int)ev.param;
 		char clip[16] = {};
-		if (m_playlist >= 0 && lib.bdnav_get_clip_info(m_nav, (uint32_t)m_playlist, ev.param, clip, sizeof(clip), nullptr, 0)) {
-			extra.Format(L" clip %s", BDNavUTF8ToW(clip).GetString());
+		char desc[512] = {};
+		if (m_playlist >= 0 && lib.bdnav_get_clip_info(m_nav, (uint32_t)m_playlist, ev.param, clip, sizeof(clip), desc, sizeof(desc))) {
+			extra.Format(L" clip %s: %s", BDNavUTF8ToW(clip).GetString(), BDNavUTF8ToW(desc).GetString());
 		}
 		break;
 	}
@@ -444,17 +566,56 @@ void CBDNavigator::HandleEvent(const BDNAV_EVENT& ev)
 		break;
 	}
 
-	if (bJump && m_dwUserActionTick && ::GetTickCount() - m_dwUserActionTick < kUserJumpWindow) {
+	if (ev.event == BDNAV_EV_PLAYLIST || ev.event == BDNAV_EV_SEEK) {
+		QueueMarker();
+	}
+
+	if (bJump && m_bUserJumpPending && ::GetTickCount() - m_dwUserActionTick < kUserJumpWindow) {
+		m_bUserJumpPending = false;
 		m_bFlushRequest = true;   // jump requested by the user: drop data buffered for the old position
 		extra += L" [flush]";
 	}
 
-	if (m_logBudget > 0) {
+	bool bLog = m_bVerbose;
+	switch (ev.event) {
+	case BDNAV_EV_TITLE: case BDNAV_EV_PLAYLIST: case BDNAV_EV_MENU: case BDNAV_EV_STILL:
+	case BDNAV_EV_END_OF_TITLE: case BDNAV_EV_ERROR: case BDNAV_EV_READ_ERROR: case BDNAV_EV_ENCRYPTED:
+		bLog = true;
+		break;
+	default:
+		break;
+	}
+	if (bLog && m_logBudget > 0) {
 		m_logBudget--;
 		CString m;
 		m.Format(L"event %s %u%s (read %.1f MB)", EventName(ev.event), ev.param, extra.GetString(), m_total / 1048576.0);
 		BDNavLog(m);
 	}
+}
+
+void CBDNavigator::UpdateChapters()
+{
+	// m_csNav held
+	std::vector<uint64_t> starts(1000);
+	const int n = CBDNavLib::Get().bdnav_get_chapters(m_nav, (uint32_t)m_playlist, starts.data(), (int)starts.size());
+	CAutoLock lock(&m_csAnchor);
+	m_chapters.clear();
+	for (int i = 0; i < n && i < (int)starts.size(); i++) {
+		m_chapters.push_back((REFERENCE_TIME)(starts[i] * 1000 / 9));
+	}
+	m_chaptersGen++;
+	PostNotify();
+}
+
+bool CBDNavigator::GetChapters(std::vector<REFERENCE_TIME>& chapters, uint32_t& gen)
+{
+	CAutoLock lock(&m_csAnchor);
+	if (gen == m_chaptersGen) {
+		return false;
+	}
+	gen = m_chaptersGen;
+	chapters = m_chapters;
+	return true;
 }
 
 void CBDNavigator::CheckAutoMenu()
@@ -481,6 +642,130 @@ void CBDNavigator::CheckAutoMenu()
 		BDNavLog(r ? L"auto menu: main title started without menu -> top menu"
 		           : L"auto menu: top menu call refused by disc");
 	}
+}
+
+void CBDNavigator::QueueMarker()
+{
+	// m_csNav held
+	Marker m = {};
+	m.title90k = CBDNavLib::Get().bdnav_tell_time(m_nav);
+	m.dur90k   = m_playlistDur;
+	m.playlist = m_playlist;
+	m.seq      = ++m_markerSeq;
+	m_pendingMarkers.push_back(m);
+}
+
+void CBDNavigator::SetReader(CBDNavReader* pReader)
+{
+	CAutoLock lock(&m_csReader);
+	m_pReader = pReader;
+}
+
+REFERENCE_TIME CBDNavigator::GetStreamTime()
+{
+	CAutoLock lock(&m_csReader);
+	return m_pReader ? m_pReader->GetStreamTimeNow() : 0;
+}
+
+void CBDNavigator::AddAnchor(REFERENCE_TIME rtStream, const Marker& m)
+{
+	Anchor a;
+	a.rt       = rtStream;
+	a.title    = (REFERENCE_TIME)(m.title90k * 1000 / 9);
+	a.dur      = (REFERENCE_TIME)(m.dur90k * 1000 / 9);
+	a.playlist = m.playlist;
+	a.seq      = m.seq;
+	{
+		CAutoLock lock(&m_csAnchor);
+		// anchors at/after this stream time belong to data that was flushed
+		while (!m_anchors.empty() && m_anchors.back().rt >= a.rt) {
+			m_anchors.pop_back();
+		}
+		m_anchors.push_back(a);
+		while (m_anchors.size() > 16) {
+			m_anchors.pop_front();
+		}
+	}
+	if (m_bVerbose && m_traceBudget > 0) {
+		m_traceBudget--;
+		CString msg;
+		msg.Format(L"time anchor: stream %.3f s = %05d.mpls %.3f / %.1f s", rtStream / 1e7, m.playlist, a.title / 1e7, a.dur / 1e7);
+		BDNavLog(msg);
+	}
+}
+
+bool CBDNavigator::GetTitlePos(REFERENCE_TIME& pos, REFERENCE_TIME& dur)
+{
+	pos = dur = 0;
+	const REFERENCE_TIME now = GetStreamTime();
+	CAutoLock lock(&m_csAnchor);
+
+	if (m_bSeekPending) {
+		bool done = ::GetTickCount() - m_seekTick > 8000;
+		for (const auto& a : m_anchors) {
+			if (a.seq >= m_seekSeq && a.rt <= now) {
+				done = true;   // the seek target is playing now
+			}
+		}
+		if (!done) {
+			pos = m_seekPos;
+			dur = m_anchors.empty() ? 0 : m_anchors.back().dur;
+			if (dur > 0 && pos > dur) {
+				pos = dur;
+			}
+			return dur > 0;
+		}
+		m_bSeekPending = false;
+	}
+
+	const Anchor* best = nullptr;
+	for (const auto& a : m_anchors) {
+		if (a.rt <= now) {
+			best = &a;
+		}
+	}
+	if (!best) {
+		return false;
+	}
+	dur = best->dur;
+	pos = best->title + std::max<REFERENCE_TIME>(now - best->rt, 0);
+	if (dur > 0 && pos > dur) {
+		pos = dur;
+	}
+	return true;
+}
+
+bool CBDNavigator::SeekTitle(REFERENCE_TIME pos)
+{
+	CUILock lock(*this);
+	if (!m_nav || !m_bPlaying) {
+		return false;
+	}
+	if (pos < 0) {
+		pos = 0;
+	}
+	UserAction();
+	m_bUserJumpPending = false;   // the flush is requested right here
+	const uint64_t tick = (uint64_t)pos * 9 / 1000;
+	const int64_t r = CBDNavLib::Get().bdnav_seek_time(m_nav, tick);
+	CString msg;
+	msg.Format(L"user: seek to %.3f s -> %lld", pos / 1e7, r);
+	BDNavLog(msg);
+	if (r < 0) {
+		FlushLibLog();
+		return false;
+	}
+	m_bFlushRequest = true;
+	QueueMarker();
+	{
+		CAutoLock lockA(&m_csAnchor);
+		m_bSeekPending = true;
+		m_seekSeq  = m_markerSeq;
+		m_seekPos  = pos;
+		m_seekTick = ::GetTickCount();
+	}
+	FlushLibLog();
+	return true;
 }
 
 void CBDNavigator::OnNotifyStatic(void* ctx, int plane, int reason)
@@ -512,6 +797,28 @@ void CBDNavigator::OnNotify(int plane, int reason)
 				}
 				m_planeBox = { p.x0, p.y0, p.x1 + 1, p.y1 + 1 };
 				m_planeVisible = true;
+
+				// convert once: premultiplied colour, inverted alpha (MPC subpicture format)
+				m_planeConv.resize(m_plane.size());
+				for (int y = m_planeBox.top; y < m_planeBox.bottom; y++) {
+					const uint32_t* s = &m_plane[(size_t)y * p.w];
+					uint32_t* d = &m_planeConv[(size_t)y * p.w];
+					for (int x = m_planeBox.left; x < m_planeBox.right; x++) {
+						const uint32_t c = s[x];
+						const uint32_t a = c >> 24;
+						if (a == 0) {
+							d[x] = 0xFF000000;
+						} else if (a == 255) {
+							d[x] = c & 0x00FFFFFF;
+						} else {
+							const uint32_t m = a * 257 + 1;   // x*a/255 ~= (x*m) >> 16
+							const uint32_t r = (((c >> 16) & 0xFF) * m) >> 16;
+							const uint32_t g = (((c >> 8) & 0xFF) * m) >> 16;
+							const uint32_t b = ((c & 0xFF) * m) >> 16;
+							d[x] = ((255 - a) << 24) | (r << 16) | (g << 8) | b;
+						}
+					}
+				}
 			} else {
 				// empty flush / hide / close: keep the last content (the main thread hides it after a short delay)
 				m_planeVisible = false;
@@ -521,6 +828,13 @@ void CBDNavigator::OnNotify(int plane, int reason)
 			}
 			m_planeVersion++;
 			visible = m_planeVisible;
+			m_dwPlaneTick = ::GetTickCount();
+		}
+		if (m_bVerbose && m_traceBudget > 0 && m_dwInputTick && m_dwPlaneTick - m_dwInputTick < 2000) {
+			m_traceBudget--;
+			CString m;
+			m.Format(L"trace: plane v%u reason=%d visible=%d, %u ms after input", m_planeVersion, reason, visible ? 1 : 0, m_dwPlaneTick - m_dwInputTick);
+			BDNavLog(m);
 		}
 		lib.bdnav_unlock_plane(m_nav, BDNAV_PLANE_IG);
 	}
@@ -564,7 +878,7 @@ bool CBDNavigator::Mouse(int x, int y, int vw, int vh, bool bClick)
 		return false;
 	}
 
-	CAutoLock lock(&m_csNav);
+	CUILock lock(*this);
 	if (!m_nav) {
 		return false;
 	}
@@ -575,6 +889,7 @@ bool CBDNavigator::Mouse(int x, int y, int vw, int vh, bool bClick)
 	m_lastMouseX = px;
 	m_lastMouseY = py;
 
+	m_dwInputTick = ::GetTickCount();
 	const int r = lib.bdnav_mouse_select(m_nav, -1, px, py);
 	if (bClick) {
 		int r2 = -100;
@@ -592,9 +907,10 @@ bool CBDNavigator::Mouse(int x, int y, int vw, int vh, bool bClick)
 
 void CBDNavigator::Key(uint32_t key)
 {
-	CAutoLock lock(&m_csNav);
+	CUILock lock(*this);
 	if (m_nav) {
 		UserAction();
+		m_dwInputTick = ::GetTickCount();
 		const int r = CBDNavLib::Get().bdnav_user_input(m_nav, -1, key);
 		CString m;
 		m.Format(L"user key %u -> %d", key, r);
@@ -605,7 +921,7 @@ void CBDNavigator::Key(uint32_t key)
 
 void CBDNavigator::MenuCall()
 {
-	CAutoLock lock(&m_csNav);
+	CUILock lock(*this);
 	if (m_nav) {
 		UserAction();
 		const int r = CBDNavLib::Get().bdnav_menu_call(m_nav, -1);
@@ -616,7 +932,7 @@ void CBDNavigator::MenuCall()
 
 void CBDNavigator::Popup()
 {
-	CAutoLock lock(&m_csNav);
+	CUILock lock(*this);
 	if (!m_nav) {
 		return;
 	}
@@ -675,6 +991,12 @@ bool CBDNavigator::RenderMenu(SubPicDesc& spd, RECT& bbox)
 	}
 
 	const bool same = (sw == spd.w && sh == spd.h);
+	if (same && m_planeConv.size() == m_plane.size()) {
+		const size_t bytes = (size_t)(db.right - db.left) * 4;
+		for (LONG y = db.top; y < db.bottom; y++) {
+			memcpy(spd.bits + (size_t)spd.pitch * y + (size_t)db.left * 4, &m_planeConv[(size_t)y * sw + db.left], bytes);
+		}
+	} else
 	for (LONG y = db.top; y < db.bottom; y++) {
 		const int syy = same ? y : std::min(MulDiv(y, sh, spd.h), sh - 1);
 		const uint32_t* src = &m_plane[(size_t)syy * sw];
@@ -695,5 +1017,14 @@ bool CBDNavigator::RenderMenu(SubPicDesc& spd, RECT& bbox)
 	}
 
 	bbox = db;
+	if (m_planeVersion != m_lastRenderedVersion) {
+		m_lastRenderedVersion = m_planeVersion;
+		if (m_bVerbose && m_traceBudget > 0 && m_dwInputTick) {
+			m_traceBudget--;
+			CString m;
+			m.Format(L"trace: rendered v%u, %u ms after plane change", m_planeVersion, ::GetTickCount() - m_dwPlaneTick);
+			BDNavLog(m);
+		}
+	}
 	return true;
 }

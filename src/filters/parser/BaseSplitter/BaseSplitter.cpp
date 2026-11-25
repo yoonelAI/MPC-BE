@@ -310,6 +310,11 @@ HRESULT CBaseSplitterFilter::DeliverPacket(std::unique_ptr<CPacket> p)
 		p->rtStop -= m_rtStart;
 
 		ASSERT(p->rtStart <= p->rtStop);
+
+		if (m_nBDNavMarkArm && !Contains(m_BDNavMarkTagged, p->TrackNumber)) {
+			m_BDNavMarkTagged.push_back(p->TrackNumber);
+			p->bBDNavMark = true;
+		}
 	}
 
 	{

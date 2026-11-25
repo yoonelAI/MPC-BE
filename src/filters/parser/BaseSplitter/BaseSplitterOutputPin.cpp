@@ -348,6 +348,17 @@ HRESULT CBaseSplitterOutputPin::DeliverPacket(std::unique_ptr<CPacket> p)
 		return S_OK;
 	}
 
+	if (p->rtStart != INVALID_TIME && m_pSplitter->m_rtResyncTo != INVALID_TIME) {
+		// BDMenu: first packet after a navigation jump -> continue at the current stream time
+		const LONGLONG target = InterlockedExchange64(&m_pSplitter->m_rtResyncTo, INVALID_TIME);
+		if (target != INVALID_TIME) {
+			const REFERENCE_TIME base = m_pSplitter->m_rtOffset == INVALID_TIME ? 0 : m_pSplitter->m_rtOffset;
+			m_pSplitter->m_rtOffset = target - (p->rtStart + base) + base;
+			m_rtPrev = target;
+			DLog(L"CBaseSplitterOutputPin::DeliverPacket() : [%u] BD navigation resync, offset %I64d", p->TrackNumber, m_pSplitter->m_rtOffset);
+		}
+	}
+
 	if (p->rtStart != INVALID_TIME && (m_pSplitter->GetFlag() & PACKET_PTS_DISCONTINUITY)) {
 		if (m_rtPrev == INVALID_TIME && m_pSplitter->m_rtOffset == INVALID_TIME) {
 			m_rtPrev = 0;
@@ -369,6 +380,10 @@ HRESULT CBaseSplitterOutputPin::DeliverPacket(std::unique_ptr<CPacket> p)
 		p->rtStop += m_pSplitter->m_rtOffset;
 
 		m_rtPrev = p->rtStart;
+	}
+
+	if (p->bBDNavMark && p->rtStart != INVALID_TIME) {
+		InterlockedCompareExchange64(&m_pSplitter->m_rtBDNavMarkTime, p->rtStart, INVALID_TIME);
 	}
 
 	m_brs.nBytesSinceLastDeliverTime += nBytes;

@@ -7,14 +7,16 @@
 
 #include "SubPic/SubPicProviderImpl.h"
 
-#define BDMENU_WINDOW 800000LL   // 80 ms subpicture windows
+#define BDMENU_WINDOW 200000LL   // 20 ms subpicture windows
 
 class CBDMenuSubPicProvider : public CSubPicProviderImpl
 {
 	CCritSec m_csLock;
+	const bool m_bSingle;   // synchronous queue: one subpicture [0, inf), invalidated on change
 
 public:
 	CBDMenuSubPicProvider();
+	bool IsSingle() const { return m_bSingle; }
 
 	// ISubPicProvider
 	STDMETHODIMP_(POSITION) GetStartPosition(REFERENCE_TIME rt, double fps, bool CleanOld = false) override;
