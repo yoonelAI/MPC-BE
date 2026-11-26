@@ -16,7 +16,7 @@
 extern "C" {
 #endif
 
-#define BDNAV_API_VERSION 5
+#define BDNAV_API_VERSION 6
 
 #ifdef BDNAV_BUILD
 #define BDNAV_EXPORT __declspec(dllexport)
@@ -140,7 +140,31 @@ typedef struct {
 	uint32_t        version;     /* incremented on every flush */
 	int             visible;     /* 1 if plane has visible pixels and is not hidden */
 	int             x0, y0, x1, y1; /* bounding box of visible pixels (inclusive), valid if visible */
+	/* v6: area changed since the previous bdnav_unlock_plane() (inclusive; dx1 < dx0 = nothing changed).
+	   Pixels outside it are unchanged since the last lock. */
+	int             dx0, dy0, dx1, dy1;
+	int             argb_source;  /* v6: 1 = BD-J (ARGB overlay), 0 = HDMV (palette overlay) */
 } BDNAV_PLANE;
+
+/* v6: configuration for bdnav_open_ex(). All strings UTF-8, NULL / "" = not used. */
+typedef struct {
+	uint32_t    size;          /* sizeof(BDNAV_CONFIG) */
+	const char* java_home;     /* JRE folder (bin\server\jvm.dll). NULL = no BD-J */
+	const char* bdj_jar;       /* full path of libbluray-j2se-x.y.z.jar (the awt jar must be next to it) */
+	const char* storage_dir;   /* BD-J persistent storage + cache root (created if missing) */
+	int         region_mask;   /* 1 A, 2 B, 4 C; 0 = default */
+	const char* menu_lang;     /* ISO 639-2, e.g. "chi" */
+	const char* audio_lang;
+	const char* pg_lang;
+	const char* country;       /* ISO 3166-1 alpha-2, e.g. "cn" */
+	int         uhd_profile;   /* 1 = report a UHD player (profile 6) even for non-UHD discs; 0 = libbluray default */
+	int         reserved[8];
+} BDNAV_CONFIG;
+
+/* flags returned by bdnav_read_ex() */
+enum {
+	BDNAV_READ_POS_JUMP = 1,   /* data does not continue the previous read (playlist change / seek / silent BD-J jump) */
+};
 
 /* called from inside bdnav_read/bdnav_user_input/... (decoder thread). Keep it short. */
 typedef void (*bdnav_notify_cb)(void* ctx, int plane, int reason);
@@ -174,6 +198,12 @@ BDNAV_EXPORT int         bdnav_get_clip_info(BDNAV* nav, uint32_t playlist, uint
 BDNAV_EXPORT int         bdnav_get_chapters(BDNAV* nav, uint32_t playlist, uint64_t* starts90k, int max); /* chapter count */
 BDNAV_EXPORT int         bdnav_get_stream_pid(BDNAV* nav, uint32_t playlist, uint32_t item, int kind, int number); /* kind 0 audio, 1 PG; number 1..N; pid or -1 */
 BDNAV_EXPORT int         bdnav_read_file(BDNAV* nav, const char* path, uint8_t* buf, int buflen); /* path relative to disc root; bytes or -1 */
+
+/* v6 */
+BDNAV_EXPORT BDNAV*      bdnav_open_ex(const char* utf8_path, const BDNAV_CONFIG* cfg, char* err, int errlen);
+BDNAV_EXPORT int         bdnav_read_ex(BDNAV* nav, uint8_t* buf, int len, BDNAV_EVENT* ev, uint32_t* flags);
+BDNAV_EXPORT int         bdnav_get_title_kind(BDNAV* nav, uint32_t title); /* 0 HDMV, 1 BD-J, -1 unknown; 0 = top menu, 0xFFFF = first play */
+BDNAV_EXPORT int         bdnav_bdj_started(BDNAV* nav);   /* 1 if a Java VM was created in this process */
 
 /* plane access: always pair with bdnav_unlock_plane() when lock returned 1 */
 BDNAV_EXPORT int         bdnav_lock_plane(BDNAV* nav, int plane, BDNAV_PLANE* out);

@@ -161,7 +161,22 @@ bool CBDNavigator::Open(const CString& path, HWND hNotify, CString& err)
 		return false;
 	}
 	char buf[2048] = {};
-	BDNAV* nav = lib.bdnav_open(BDNavWToUTF8(root), buf, sizeof(buf));
+	// BD-J: bundled JRE + libbluray jar next to the exe (bdj\jre, bdj\libbluray-j2se-*.jar)
+	BDNAV_CONFIG cfg = {};
+	cfg.size = sizeof(cfg);
+	const CString bdjDir = BDNavGetExeDir() + L"\\bdj";
+	const CString jre = bdjDir + L"\\jre";
+	const CString jar = bdjDir + L"\\libbluray-j2se-1.5.1.jar";
+	const bool bHaveJava = ::PathFileExistsW(jre + L"\\bin\\server\\jvm.dll") && ::PathFileExistsW(jar);
+	const CStringA jre8 = BDNavWToUTF8(jre), jar8 = BDNavWToUTF8(jar), store8 = BDNavWToUTF8(BDNavGetDataDir() + L"\\bdj_storage");
+	if (bHaveJava) {
+		cfg.java_home = jre8;
+		cfg.bdj_jar = jar8;
+		cfg.storage_dir = store8;
+	}
+	cfg.menu_lang = "chi";
+	cfg.pg_lang = "chi";
+	BDNAV* nav = lib.bdnav_open_ex(BDNavWToUTF8(root), &cfg, buf, sizeof(buf));
 	if (!nav) {
 		err = L"libbluray cannot open the disc: " + BDNavUTF8ToW(buf);
 		return false;
@@ -180,7 +195,8 @@ bool CBDNavigator::Open(const CString& path, HWND hNotify, CString& err)
 	} else if (di.no_menu_support || (!di.first_play_supported && !di.top_menu_supported)) {
 		reason = L"no HDMV navigation";
 	} else if (di.num_bdj_titles > 0 || di.bdj_detected) {
-		reason = L"BD-J disc (not supported yet)";
+		reason.Format(L"BD-J disc (not supported yet; Java %s, BD-J %s)",
+			bHaveJava ? L"bundled" : L"missing", di.bdj_handled ? L"usable" : L"not usable");
 	}
 	if (!reason.IsEmpty()) {
 		lib.bdnav_close(nav);
@@ -247,6 +263,7 @@ bool CBDNavigator::Open(const CString& path, HWND hNotify, CString& err)
 		m_plane.clear();
 		m_planeW = m_planeH = 0;
 		m_planeVisible = false;
+		m_bPlaneSynced = false;
 		m_planeVersion = 0;
 	}
 	m_bNotifyPending = false;
@@ -407,6 +424,7 @@ void CBDNavigator::Close()
 		m_plane.shrink_to_fit();
 		m_planeW = m_planeH = 0;
 		m_planeVisible = false;
+		m_bPlaneSynced = false;
 	}
 	m_bOverlayOn = false;
 	if (!m_strMarker.IsEmpty()) {
@@ -514,7 +532,12 @@ int CBDNavigator::ReadTS(BYTE* out, int outcap, bool& bEvent, bool& bFlush, std:
 	}
 
 	BDNAV_EVENT ev = {};
-	const int r = CBDNavLib::Get().bdnav_read(m_nav, out, want, &ev);
+	uint32_t rflags = 0;
+	const int r = CBDNavLib::Get().bdnav_read_ex(m_nav, out, want, &ev, &rflags);
+	if ((rflags & BDNAV_READ_POS_JUMP) && ev.event == BDNAV_EV_NONE && m_bVerbose && m_logBudget > 0) {
+		m_logBudget--;
+		BDNavLog(L"read position jumped without an event");
+	}
 	if (ev.event != BDNAV_EV_NONE) {
 		bEvent = true;
 		HandleEvent(ev);
@@ -1021,19 +1044,42 @@ void CBDNavigator::OnNotify(int plane, int reason)
 				m_planeH = p.h;
 			}
 			if (reason == BDNAV_OV_FLUSH && p.argb && p.visible && p.w > 0 && p.h > 0) {
-				m_plane.resize((size_t)p.w * p.h);
-				for (int y = 0; y < p.h; y++) {
-					memcpy(&m_plane[(size_t)y * p.w], p.argb + (size_t)y * p.stride, (size_t)p.w * 4);
+				const size_t npx = (size_t)p.w * p.h;
+				// partial update (only the area the disc changed) if our copy is in sync with the dll plane
+				const bool partial = m_bPlaneSynced && m_plane.size() == npx && m_planeConv.size() == npx;
+				RECT dr = { 0, 0, p.w, p.h };
+				if (partial) {
+					dr = (p.dx1 >= p.dx0) ? RECT{ p.dx0, p.dy0, p.dx1 + 1, p.dy1 + 1 } : RECT{ 0, 0, 0, 0 };
 				}
-				m_planeBox = { p.x0, p.y0, p.x1 + 1, p.y1 + 1 };
+				m_plane.resize(npx);
+				m_planeConv.resize(npx);
+				if (dr.right > dr.left) {
+					const size_t bytes = (size_t)(dr.right - dr.left) * 4;
+					for (LONG y = dr.top; y < dr.bottom; y++) {
+						memcpy(&m_plane[(size_t)y * p.w + dr.left], p.argb + (size_t)y * p.stride + dr.left, bytes);
+					}
+				}
+				const RECT oldBox = m_planeBox;
+				const RECT newBox = { p.x0, p.y0, p.x1 + 1, p.y1 + 1 };
+				// m_planeConv is valid inside m_planeBox: convert the changed area, or the whole box if it grew
+				const bool inside = partial && newBox.left >= oldBox.left && newBox.top >= oldBox.top
+					&& newBox.right <= oldBox.right && newBox.bottom <= oldBox.bottom;
+				RECT cv = newBox;
+				if (inside) {
+					cv.left = std::max(dr.left, newBox.left);
+					cv.top = std::max(dr.top, newBox.top);
+					cv.right = std::min(dr.right, newBox.right);
+					cv.bottom = std::min(dr.bottom, newBox.bottom);
+				}
+				m_planeBox = newBox;
 				m_planeVisible = true;
+				m_bPlaneSynced = true;
 
 				// convert once: premultiplied colour, inverted alpha (MPC subpicture format)
-				m_planeConv.resize(m_plane.size());
-				for (int y = m_planeBox.top; y < m_planeBox.bottom; y++) {
+				for (int y = cv.top; y < cv.bottom; y++) {
 					const uint32_t* s = &m_plane[(size_t)y * p.w];
 					uint32_t* d = &m_planeConv[(size_t)y * p.w];
-					for (int x = m_planeBox.left; x < m_planeBox.right; x++) {
+					for (int x = cv.left; x < cv.right; x++) {
 						const uint32_t c = s[x];
 						const uint32_t a = c >> 24;
 						if (a == 0) {
@@ -1052,6 +1098,7 @@ void CBDNavigator::OnNotify(int plane, int reason)
 			} else {
 				// empty flush / hide / close: keep the last content (the main thread hides it after a short delay)
 				m_planeVisible = false;
+				m_bPlaneSynced = false;
 				if (reason == BDNAV_OV_CLOSE) {
 					m_plane.clear();
 				}

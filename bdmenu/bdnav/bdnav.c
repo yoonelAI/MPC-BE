@@ -19,6 +19,7 @@
 #include <libbluray/overlay.h>
 #include <libbluray/keys.h>
 #include <libbluray/log_control.h>
+#include <libbluray/player_settings.h>
 
 #include "bdnav_api.h"
 
@@ -44,9 +45,12 @@ static CRITICAL_SECTION g_log_cs;
 static char   g_log[65536];
 static size_t g_log_len;
 
+static volatile LONG g_jvm_created;
+
 static void log_cb(const char* msg)
 {
 	if (!msg) return;
+	if (strstr(msg, "Created Java VM")) InterlockedExchange(&g_jvm_created, 1);
 	EnterCriticalSection(&g_log_cs);
 	size_t n = strlen(msg);
 	const size_t cap = sizeof(g_log) - 1;
@@ -98,6 +102,9 @@ typedef struct {
 	int       hidden;
 	int       visible;
 	int       x0, y0, x1, y1;
+	int       ax0, ay0, ax1, ay1;   /* changes since the last flush (inclusive; ax1 < ax0 = none) */
+	int       dx0, dy0, dx1, dy1;   /* flushed changes not yet seen by the host (cleared by unlock) */
+	int       argb;                 /* 1 = BD-J ARGB plane */
 } PLANE;
 
 struct bdnav_s {
@@ -106,13 +113,58 @@ struct bdnav_s {
 	PLANE            pl[2];
 	bdnav_notify_cb  notify;
 	void*            notify_ctx;
+	uint64_t         last_end;     /* bd_tell() after the previous read */
+	int              have_pos;
 };
+
+static void dirty_reset(int* r) { r[0] = r[1] = 0x7fffffff; r[2] = r[3] = -1; }
+
+static void dirty_add(int* r, int x0, int y0, int x1, int y1)
+{
+	if (x1 < x0 || y1 < y0) return;
+	if (x0 < r[0]) r[0] = x0;
+	if (y0 < r[1]) r[1] = y0;
+	if (x1 > r[2]) r[2] = x1;
+	if (y1 > r[3]) r[3] = y1;
+}
+
+/* clip to the plane and add to the "since last flush" area */
+static void plane_touch(PLANE* pl, int x, int y, int w, int h)
+{
+	int x0 = x < 0 ? 0 : x, y0 = y < 0 ? 0 : y;
+	int x1 = x + w - 1, y1 = y + h - 1;
+	if (x1 >= pl->w) x1 = pl->w - 1;
+	if (y1 >= pl->h) y1 = pl->h - 1;
+	dirty_add(&pl->ax0, x0, y0, x1, y1);
+}
+
+static void plane_reset(PLANE* pl, int w, int h, int argb)
+{
+	free(pl->px);
+	memset(pl, 0, sizeof(PLANE));
+	pl->w = w; pl->h = h;
+	pl->argb = argb;
+	pl->px = (w > 0 && h > 0) ? (uint32_t*)calloc((size_t)w * h, 4) : NULL;
+	dirty_reset(&pl->ax0);
+	dirty_reset(&pl->dx0);
+	if (pl->px) { dirty_add(&pl->ax0, 0, 0, w - 1, h - 1); }
+}
+
+/* end of a frame: publish the accumulated change area */
+static void plane_flush(PLANE* pl)
+{
+	dirty_add(&pl->dx0, pl->ax0, pl->ay0, pl->ax1, pl->ay1);
+	dirty_reset(&pl->ax0);
+}
 
 BDNAV_EXPORT int bdnav_api_version(void) { return BDNAV_API_VERSION; }
 
 BDNAV_EXPORT void bdnav_set_debug(int level)
 {
-	bd_set_debug_mask(level > 0 ? (DBG_CRIT | DBG_HDMV | DBG_GC | DBG_NAV | DBG_BLURAY) : DBG_CRIT);
+	uint32_t m = DBG_CRIT;
+	if (level > 0) m |= DBG_HDMV | DBG_GC | DBG_NAV | DBG_BLURAY;
+	if (level > 1) m |= DBG_BDJ;
+	bd_set_debug_mask(m);
 }
 
 BDNAV_EXPORT const char* bdnav_lib_version(void)
@@ -179,19 +231,15 @@ static void overlay_cb(void* handle, const BD_OVERLAY* const ov)
 	PLANE* pl = &nav->pl[plane];
 	switch (ov->cmd) {
 	case BD_OVERLAY_INIT:
-		free(pl->px);
-		memset(pl, 0, sizeof(PLANE));
-		pl->w = ov->w; pl->h = ov->h;
-		pl->px = (uint32_t*)calloc((size_t)ov->w * ov->h, 4);
+		plane_reset(pl, ov->w, ov->h, 0);
 		reason = BDNAV_OV_INIT;
 		break;
 	case BD_OVERLAY_CLOSE:
-		free(pl->px);
-		memset(pl, 0, sizeof(PLANE));
+		plane_reset(pl, 0, 0, 0);
 		reason = BDNAV_OV_CLOSE;
 		break;
 	case BD_OVERLAY_CLEAR:
-		if (pl->px) memset(pl->px, 0, (size_t)pl->w * pl->h * 4);
+		if (pl->px) { memset(pl->px, 0, (size_t)pl->w * pl->h * 4); plane_touch(pl, 0, 0, pl->w, pl->h); }
 		break;
 	case BD_OVERLAY_HIDE:
 		pl->hidden = 1;
@@ -204,6 +252,7 @@ static void overlay_cb(void* handle, const BD_OVERLAY* const ov)
 			for (int y = ov->y; y < ov->y + ov->h && y < pl->h; y++)
 				for (int x = ov->x; x < ov->x + ov->w && x < pl->w; x++)
 					if (x >= 0 && y >= 0) pl->px[(size_t)y * pl->w + x] = 0;
+			plane_touch(pl, ov->x, ov->y, ov->w, ov->h);
 		}
 		break;
 	case BD_OVERLAY_DRAW:
@@ -226,11 +275,13 @@ static void overlay_cb(void* handle, const BD_OVERLAY* const ov)
 				}
 				if (x >= ov->w && r->len == 0) r++;
 			}
+			plane_touch(pl, ov->x, ov->y, ov->w, ov->h);
 		}
 		break;
 	case BD_OVERLAY_FLUSH:
 		pl->hidden = 0;
 		if (pl->px) plane_bbox(pl);
+		plane_flush(pl);
 		pl->version++;
 		reason = BDNAV_OV_FLUSH;
 		break;
@@ -240,6 +291,79 @@ static void overlay_cb(void* handle, const BD_OVERLAY* const ov)
 	LeaveCriticalSection(&nav->cs);
 
 	if (reason && nav->notify) nav->notify(nav->notify_ctx, plane, reason);
+}
+
+/* BD-J graphics: libbluray hands over ARGB rectangles (no application frame buffer) */
+static void argb_overlay_cb(void* handle, const BD_ARGB_OVERLAY* const ov)
+{
+	BDNAV* nav = (BDNAV*)handle;
+	int reason = 0, plane = -1;
+
+	if (!ov) {
+		EnterCriticalSection(&nav->cs);
+		for (int i = 0; i < 2; i++) if (nav->pl[i].argb) plane_reset(&nav->pl[i], 0, 0, 0);
+		LeaveCriticalSection(&nav->cs);
+		if (nav->notify) {
+			nav->notify(nav->notify_ctx, BDNAV_PLANE_PG, BDNAV_OV_CLOSE);
+			nav->notify(nav->notify_ctx, BDNAV_PLANE_IG, BDNAV_OV_CLOSE);
+		}
+		return;
+	}
+	if (ov->plane > 1) return;
+	plane = ov->plane;
+
+	EnterCriticalSection(&nav->cs);
+	PLANE* pl = &nav->pl[plane];
+	switch (ov->cmd) {
+	case BD_ARGB_OVERLAY_INIT:
+		plane_reset(pl, ov->w, ov->h, 1);
+		reason = BDNAV_OV_INIT;
+		break;
+	case BD_ARGB_OVERLAY_CLOSE:
+		plane_reset(pl, 0, 0, 0);
+		reason = BDNAV_OV_CLOSE;
+		break;
+	case BD_ARGB_OVERLAY_DRAW:
+		if (pl->px && ov->argb) {
+			pl->argb = 1;
+			int x0 = ov->x, y0 = ov->y, w = ov->w, h = ov->h;
+			int sx = 0, sy = 0;
+			if (x0 < 0) { sx = -x0; w += x0; x0 = 0; }
+			if (y0 < 0) { sy = -y0; h += y0; y0 = 0; }
+			if (x0 + w > pl->w) w = pl->w - x0;
+			if (y0 + h > pl->h) h = pl->h - y0;
+			if (w > 0 && h > 0) {
+				for (int y = 0; y < h; y++)
+					memcpy(pl->px + (size_t)(y0 + y) * pl->w + x0, ov->argb + (size_t)(sy + y) * ov->stride + sx, (size_t)w * 4);
+				plane_touch(pl, x0, y0, w, h);
+			}
+		}
+		break;
+	case BD_ARGB_OVERLAY_FLUSH:
+		pl->hidden = 0;
+		if (pl->px) plane_bbox(pl);
+		plane_flush(pl);
+		pl->version++;
+		reason = BDNAV_OV_FLUSH;
+		break;
+	default:
+		break;
+	}
+	LeaveCriticalSection(&nav->cs);
+
+	if (reason && nav->notify) nav->notify(nav->notify_ctx, plane, reason);
+}
+
+static BDNAV* nav_create(BLURAY* bd)
+{
+	BDNAV* nav = (BDNAV*)calloc(1, sizeof(BDNAV));
+	if (!nav) return NULL;
+	nav->bd = bd;
+	InitializeCriticalSection(&nav->cs);
+	for (int i = 0; i < 2; i++) { dirty_reset(&nav->pl[i].ax0); dirty_reset(&nav->pl[i].dx0); }
+	bd_register_overlay_proc(bd, nav, overlay_cb);
+	bd_register_argb_overlay_proc(bd, nav, argb_overlay_cb, NULL);
+	return nav;
 }
 
 BDNAV_EXPORT BDNAV* bdnav_open(const char* utf8_path, char* err, int errlen)
@@ -252,12 +376,152 @@ BDNAV_EXPORT BDNAV* bdnav_open(const char* utf8_path, char* err, int errlen)
 		if (err && errlen > 0) bdnav_get_log(err, errlen, 0);
 		return NULL;
 	}
-	BDNAV* nav = (BDNAV*)calloc(1, sizeof(BDNAV));
-	if (!nav) { bd_close(bd); return NULL; }
-	nav->bd = bd;
-	InitializeCriticalSection(&nav->cs);
-	bd_register_overlay_proc(bd, nav, overlay_cb);
+	BDNAV* nav = nav_create(bd);
+	if (!nav) bd_close(bd);
 	return nav;
+}
+
+static int u8_to_w(const char* s, wchar_t* w, int cap)
+{
+	if (!s || !*s || !w || cap <= 0) return 0;
+	return MultiByteToWideChar(CP_UTF8, 0, s, -1, w, cap);
+}
+
+static void delete_tree(const wchar_t* dir, int depth)
+{
+	if (depth > 12) return;
+	wchar_t pat[MAX_PATH * 2];
+	_snwprintf(pat, MAX_PATH * 2 - 1, L"%ls\\*", dir);
+	pat[MAX_PATH * 2 - 1] = 0;
+	WIN32_FIND_DATAW fd;
+	HANDLE h = FindFirstFileW(pat, &fd);
+	if (h != INVALID_HANDLE_VALUE) {
+		do {
+			if (!wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
+			wchar_t sub[MAX_PATH * 2];
+			_snwprintf(sub, MAX_PATH * 2 - 1, L"%ls\\%ls", dir, fd.cFileName);
+			sub[MAX_PATH * 2 - 1] = 0;
+			if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) delete_tree(sub, depth + 1);
+			else { SetFileAttributesW(sub, FILE_ATTRIBUTE_NORMAL); DeleteFileW(sub); }
+		} while (FindNextFileW(h, &fd));
+		FindClose(h);
+	}
+	RemoveDirectoryW(dir);
+}
+
+/* BD-J VFS caches (%TEMP%\libbluray-bdj-cache\<id>) of earlier sessions are often left behind
+   because the JVM still holds the files at exit: remove the ones older than one hour */
+static void clean_bdj_temp(void)
+{
+	wchar_t tmp[MAX_PATH], base[MAX_PATH * 2], pat[MAX_PATH * 2];
+	if (!GetTempPathW(MAX_PATH, tmp)) return;
+	_snwprintf(base, MAX_PATH * 2 - 1, L"%lslibbluray-bdj-cache", tmp);
+	base[MAX_PATH * 2 - 1] = 0;
+	_snwprintf(pat, MAX_PATH * 2 - 1, L"%ls\\*", base);
+	pat[MAX_PATH * 2 - 1] = 0;
+	FILETIME now; GetSystemTimeAsFileTime(&now);
+	const ULONGLONG t_now = ((ULONGLONG)now.dwHighDateTime << 32) | now.dwLowDateTime;
+	WIN32_FIND_DATAW fd;
+	HANDLE h = FindFirstFileW(pat, &fd);
+	if (h == INVALID_HANDLE_VALUE) return;
+	do {
+		if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || !wcscmp(fd.cFileName, L".") || !wcscmp(fd.cFileName, L"..")) continue;
+		const ULONGLONG t = ((ULONGLONG)fd.ftLastWriteTime.dwHighDateTime << 32) | fd.ftLastWriteTime.dwLowDateTime;
+		if (t_now > t && t_now - t > 36000000000ULL) {   /* 1 hour in 100 ns */
+			wchar_t sub[MAX_PATH * 2];
+			_snwprintf(sub, MAX_PATH * 2 - 1, L"%ls\\%ls", base, fd.cFileName);
+			sub[MAX_PATH * 2 - 1] = 0;
+			delete_tree(sub, 0);
+		}
+	} while (FindNextFileW(h, &fd));
+	FindClose(h);
+}
+
+/* jvm.dll imports the VC++ runtime; use the copy shipped with the JRE if the system has none */
+static void preload_jre_runtime(const wchar_t* jhome)
+{
+	static const wchar_t* names[] = { L"vcruntime140.dll", L"vcruntime140_1.dll", L"msvcp140.dll" };
+	for (int i = 0; i < 3; i++) {
+		if (GetModuleHandleW(names[i])) continue;
+		HMODULE hm = LoadLibraryExW(names[i], NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
+		if (hm) continue;   /* system copy (kept loaded) */
+		wchar_t p[MAX_PATH * 2];
+		_snwprintf(p, MAX_PATH * 2 - 1, L"%ls\\bin\\%ls", jhome, names[i]);
+		p[MAX_PATH * 2 - 1] = 0;
+		LoadLibraryExW(p, NULL, LOAD_WITH_ALTERED_SEARCH_PATH);
+	}
+}
+
+BDNAV_EXPORT BDNAV* bdnav_open_ex(const char* utf8_path, const BDNAV_CONFIG* cfg, char* err, int errlen)
+{
+	if (err && errlen > 0) err[0] = 0;
+	if (!utf8_path) return NULL;
+	if (cfg && cfg->size < sizeof(BDNAV_CONFIG)) cfg = NULL;
+
+	int bdj = 0;
+	if (cfg && cfg->java_home && *cfg->java_home && cfg->bdj_jar && *cfg->bdj_jar) {
+		wchar_t jh[MAX_PATH * 2] = { 0 }, jar[MAX_PATH * 2] = { 0 };
+		if (u8_to_w(cfg->java_home, jh, MAX_PATH * 2) && u8_to_w(cfg->bdj_jar, jar, MAX_PATH * 2)) {
+			/* libbluray (statically linked: same CRT as this dll) reads these at bd_open() and when
+			   the JVM is created. The process environment is set too (JVM side). */
+			_wputenv_s(L"JAVA_HOME", jh);
+			_wputenv_s(L"LIBBLURAY_CP", jar);
+			SetEnvironmentVariableW(L"JAVA_HOME", jh);
+			SetEnvironmentVariableW(L"LIBBLURAY_CP", jar);
+			preload_jre_runtime(jh);
+			clean_bdj_temp();
+			bdj = 1;
+		}
+	}
+
+	BLURAY* bd = bd_open(utf8_path, NULL);
+	if (!bd) {
+		if (err && errlen > 0) bdnav_get_log(err, errlen, 0);
+		return NULL;
+	}
+	BDNAV* nav = nav_create(bd);
+	if (!nav) { bd_close(bd); return NULL; }
+
+	if (cfg) {
+		if (bdj) {
+			bd_set_player_setting_str(bd, BLURAY_PLAYER_JAVA_HOME, cfg->java_home);
+			if (cfg->storage_dir && *cfg->storage_dir) {
+				wchar_t sd[MAX_PATH * 2] = { 0 };
+				char sub[MAX_PATH * 4];
+				if (u8_to_w(cfg->storage_dir, sd, MAX_PATH * 2)) {
+					CreateDirectoryW(sd, NULL);
+					wchar_t w2[MAX_PATH * 2];
+					_snwprintf(w2, MAX_PATH * 2 - 1, L"%ls\\persist", sd); w2[MAX_PATH * 2 - 1] = 0; CreateDirectoryW(w2, NULL);
+					_snwprintf(w2, MAX_PATH * 2 - 1, L"%ls\\cache", sd);   w2[MAX_PATH * 2 - 1] = 0; CreateDirectoryW(w2, NULL);
+				}
+				_snprintf(sub, sizeof(sub) - 1, "%s\\persist", cfg->storage_dir); sub[sizeof(sub) - 1] = 0;
+				bd_set_player_setting_str(bd, BLURAY_PLAYER_PERSISTENT_ROOT, sub);
+				_snprintf(sub, sizeof(sub) - 1, "%s\\cache", cfg->storage_dir); sub[sizeof(sub) - 1] = 0;
+				bd_set_player_setting_str(bd, BLURAY_PLAYER_CACHE_ROOT, sub);
+			}
+		}
+		if (cfg->region_mask > 0) bd_set_player_setting(bd, BLURAY_PLAYER_SETTING_REGION_CODE, (uint32_t)cfg->region_mask);
+		if (cfg->menu_lang  && *cfg->menu_lang)  bd_set_player_setting_str(bd, BLURAY_PLAYER_SETTING_MENU_LANG, cfg->menu_lang);
+		if (cfg->audio_lang && *cfg->audio_lang) bd_set_player_setting_str(bd, BLURAY_PLAYER_SETTING_AUDIO_LANG, cfg->audio_lang);
+		if (cfg->pg_lang    && *cfg->pg_lang)    bd_set_player_setting_str(bd, BLURAY_PLAYER_SETTING_PG_LANG, cfg->pg_lang);
+		if (cfg->country    && *cfg->country)    bd_set_player_setting_str(bd, BLURAY_PLAYER_SETTING_COUNTRY_CODE, cfg->country);
+		if (cfg->uhd_profile) bd_set_player_setting(bd, BLURAY_PLAYER_SETTING_PLAYER_PROFILE, BLURAY_PLAYER_PROFILE_6_v3_1);
+	}
+	return nav;
+}
+
+BDNAV_EXPORT int bdnav_bdj_started(BDNAV* nav) { (void)nav; return g_jvm_created ? 1 : 0; }
+
+BDNAV_EXPORT int bdnav_get_title_kind(BDNAV* nav, uint32_t title)
+{
+	if (!nav) return -1;
+	const BLURAY_DISC_INFO* di = bd_get_disc_info(nav->bd);
+	if (!di) return -1;
+	const BLURAY_TITLE* t = NULL;
+	if (title == 0xFFFF) t = di->first_play;
+	else if (title == 0) t = di->top_menu;
+	else if (title <= di->num_titles && di->titles) t = di->titles[title];
+	return t ? (t->bdj ? 1 : 0) : -1;
 }
 
 BDNAV_EXPORT void bdnav_close(BDNAV* nav)
@@ -265,6 +529,7 @@ BDNAV_EXPORT void bdnav_close(BDNAV* nav)
 	if (!nav) return;
 	nav->notify = NULL;
 	bd_register_overlay_proc(nav->bd, NULL, NULL);
+	bd_register_argb_overlay_proc(nav->bd, NULL, NULL, NULL);
 	bd_close(nav->bd);
 	for (int i = 0; i < 2; i++) free(nav->pl[i].px);
 	DeleteCriticalSection(&nav->cs);
@@ -333,6 +598,24 @@ BDNAV_EXPORT int bdnav_read(BDNAV* nav, uint8_t* buf, int len, BDNAV_EVENT* ev)
 	memset(&e, 0, sizeof(e));
 	int r = bd_read_ext(nav->bd, buf, len, &e);
 	if (ev) { ev->event = e.event; ev->param = e.param; }
+	return r;
+}
+
+BDNAV_EXPORT int bdnav_read_ex(BDNAV* nav, uint8_t* buf, int len, BDNAV_EVENT* ev, uint32_t* flags)
+{
+	if (flags) *flags = 0;
+	if (!nav) return -1;
+	BD_EVENT e;
+	memset(&e, 0, sizeof(e));
+	int r = bd_read_ext(nav->bd, buf, len, &e);
+	if (ev) { ev->event = e.event; ev->param = e.param; }
+	if (r > 0) {
+		const uint64_t end = bd_tell(nav->bd);
+		const uint64_t start = end >= (uint64_t)r ? end - (uint64_t)r : 0;
+		if (nav->have_pos && start != nav->last_end && flags) *flags |= BDNAV_READ_POS_JUMP;
+		nav->last_end = end;
+		nav->have_pos = 1;
+	}
 	return r;
 }
 
@@ -509,11 +792,15 @@ BDNAV_EXPORT int bdnav_lock_plane(BDNAV* nav, int plane, BDNAV_PLANE* out)
 	out->version = pl->version;
 	out->visible = pl->visible;
 	out->x0 = pl->x0; out->y0 = pl->y0; out->x1 = pl->x1; out->y1 = pl->y1;
+	out->dx0 = pl->dx0; out->dy0 = pl->dy0; out->dx1 = pl->dx1; out->dy1 = pl->dy1;
+	if (out->dx1 < out->dx0) { out->dx0 = out->dy0 = 0; out->dx1 = out->dy1 = -1; }
+	out->argb_source = pl->argb;
 	return 1;
 }
 
 BDNAV_EXPORT void bdnav_unlock_plane(BDNAV* nav, int plane)
 {
-	(void)plane;
-	if (nav) LeaveCriticalSection(&nav->cs);
+	if (!nav) return;
+	if (plane >= 0 && plane <= 1) dirty_reset(&nav->pl[plane].dx0);   /* the host has seen these changes */
+	LeaveCriticalSection(&nav->cs);
 }

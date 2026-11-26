@@ -130,6 +130,7 @@ private:
 	int        m_planeW = 0, m_planeH = 0;
 	RECT       m_planeBox = {};
 	bool       m_planeVisible = false;
+	bool       m_bPlaneSynced = false;   // m_plane/m_planeConv match the dll plane (partial updates allowed)
 	uint32_t   m_planeVersion = 0;
 
 	// navigation state (under m_csNav)

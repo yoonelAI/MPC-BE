@@ -772,7 +772,7 @@ void CAppSettings::ResetSettings()
 	bSmartSeekOnline = false;
 	iSmartSeekSize = 15;
 	iSmartSeekVR = 0;
-	fChapterMarker = false;
+	fChapterMarker = true; // BDMenu: chapter marks on by default
 	fFlybar = true;
 	fFlybarOnTop = false;
 	iPlsFontPercent = 100;
@@ -1572,6 +1572,20 @@ void CAppSettings::LoadSettings(bool bForce/* = false*/)
 
 	if (fLaunchfullscreen && !ExclusiveFSAllowed()) {
 		nCLSwitches |= CLSW_FULLSCREEN;
+	}
+
+	// BDMenu edition defaults (applied once per settings store, also for settings carried over
+	// from an original MPC-BE install): info bar off, chapter marks on the seek bar on.
+	{
+		UINT nBDMenuDefaults = 0;
+		profile.ReadUInt(IDS_R_SETTINGS, L"BDMenuDefaults", nBDMenuDefaults);
+		if (nBDMenuDefaults < 1) {
+			nCS &= ~CS_INFOBAR;
+			fChapterMarker = true;
+			profile.WriteUInt(IDS_R_SETTINGS, IDS_RS_CONTROLSTATE, nCS);
+			profile.WriteBool(IDS_R_SETTINGS, IDS_RS_CHAPTER_MARKER, fChapterMarker);
+			profile.WriteUInt(IDS_R_SETTINGS, L"BDMenuDefaults", 1);
+		}
 	}
 
 	LoadFormats(false);

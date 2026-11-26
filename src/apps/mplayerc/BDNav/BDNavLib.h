@@ -34,7 +34,11 @@
 	X(bdnav_get_stream_pid)         \
 	X(bdnav_read_file)              \
 	X(bdnav_lock_plane)             \
-	X(bdnav_unlock_plane)
+	X(bdnav_unlock_plane)            \
+	X(bdnav_open_ex)                \
+	X(bdnav_read_ex)                \
+	X(bdnav_get_title_kind)         \
+	X(bdnav_bdj_started)
 
 class CBDNavLib
 {
@@ -64,6 +68,7 @@ CStringA BDNavWToUTF8(const CString& s);
 CString BDNavGetDiscRoot(const CString& path);   // .iso -> itself; ...\BDMV\index.bdmv -> disc root folder
 void BDNavLog(const CString& line);              // appends to bdnav.log next to mpc-be64.exe
 void BDNavLogRaw(const char* utf8, size_t len);   // appends raw UTF-8 text (libbluray log)
+CString BDNavGetExeDir();                         // folder of mpc-be64.exe
 CString BDNavGetDataDir();                        // exe folder if writable, else %LOCALAPPDATA%\MPC-BE-BDMenu
 bool BDNavIsVerbose();                            // bdnav_debug.txt exists in the data folder
 

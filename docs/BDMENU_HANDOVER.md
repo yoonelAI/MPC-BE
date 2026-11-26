@@ -2,6 +2,43 @@
 
 > 每轮开发后更新本文件（顶部"当前状态"和末尾"开发记录"）。换 agent / 换对话时先读这里。
 > 最后更新：2026-11-26 00:45（Asia/Shanghai） 版本 **P1.4（已发布：已打包、已推送 c897005）**　下一步：P2 BD-J
+> 11-26 01:30 新对话接手：远端最新提交为 f57fe87（仅交接文档）；P2 BD-J 方案草案见 `docs\P2_BDJ_PLAN.md`（待用户批准）。
+> 11-26 01:50 用户批准 P2，从 P2-0 验证开始。发现：deps\bdlibs 的静态 bluray.lib 1.5.1 **已含 BD-J 本地代码**（JNI、Java 9+ --patch-module、JAVA_HOME/LIBBLURAY_CP 查找），只缺 jar 和 JRE。
+> 新增：`repo\.github\workflows\bdj.yml`（ubuntu 编 libbluray-j2se/awt jar，JDK17/21 两份，发布到 release `bdj-1.5.1`）、`repo\bdmenu\tools\bdjprobe.c`（BD-J 验证工具）、`tools\bdj_deps.cmd`（下载 jar + Temurin JRE 21/17 到 deps\bdj）、`tools\bdj_probe.cmd`（编译并跑 4 组配置，输出 builds\bdjprobe）；代理新增命令 `bdjdeps`、`probe`（改了 build_agent.cmd，需用户重开代理）。
+> 11-26 17:50 **P2-0 通过**（推送 873d5fe；deps\bdj 有 jars17/jars21/jre17/jre21）：**Java 17 下 Odyssey BD-J 菜单完整可用**（片头、主菜单、左右键高亮、PLAY 进正片、弹出菜单、回主菜单）；
+>   Java 21 失败（VFS 缓存不按需拷 JAR\00001\*.xml → Xlet 启动失败）→ 交付 Java 17。BD-J 菜单不吃鼠标（mouse_select=0）。详见 docs\P2_BDJ_PLAN.md 顶部"P2-0 结果"、截图 docs\P2_0_java17_shots.png。下一步 P2-1（bdnav.dll API v6）。
+> 11-26 18:20 用户新要求（**长期有效**）：
+>   1. **阶段性版本不再做补丁包**，改为 **安装版（Inno Setup exe，和原版一样写注册表/卸载项/文件关联）+ 绿色版**。安装版基于 `repo\distrib\mpc-be_setup.iss` 修改：
+>      加 bdnav.dll、BDMenu-README、（P2 起）bdj\jre17 + jar；版本名带 BDMenu；本机未装 Inno Setup 6（需 ≥6.5.2，打包前让代理装便携版）；
+>      distrib\MPC_components\DirectX\x64 为空，打包时从 builds\local 拷 d3dcompiler_47.dll / d3dx9_43.dll。
+>      **用户已定：安装版覆盖原版**（沿用原版 AppId {FE09AF6D-...}、目录 C:\Program Files\MPC-BE x64），但**只在绿色版确认完全正常后**才用来替换用户日常的原版。
+>   2. **默认设置**：查看→信息栏 默认关；选项→播放器→界面→显示章节标记 默认开。已改 AppSettings.cpp（ResetSettings fChapterMarker=true；LoadSettings 末尾一次性迁移：
+>      设置里无 `BDMenuDefaults` 时 nCS 去掉 CS_INFOBAR、ChapterMarker=1、写 BDMenuDefaults=1 —— 原版设置沿用过来也会生效一次）。18:16 main 编译成功，已部署 builds\local（未推送）。
+>      注意：builds\local 无 ini → 用注册表 HKCU\Software\MPC-BE，和已安装的原版共用设置。
+> 11-26 18:11 新测试盘（bdjprobe，Java 17，agent\probe_discs.txt 列表模式，日志 builds\bdjprobe\log_<名>.txt，截图 artifacts）：
+>   - **可怜的东西 Poor Things**（`E:\AI\MPC-BE-BDMenu\2023.可怜的东西.Poor Things.iso`，50GB，UHD，**BD-J**，56 BD-J + 34 HDMV 标题，已解密）：✅ 片头 → BD-J 语言选择菜单（13 种语言，上下键移动）→ 回车 → 主菜单 PLAY/SCENES/SET UP/EXTRAS，键盘可用。
+>     注意：语言菜单是**无限静止画面**（连发 STILL_TIME param=0，读取停止）→ P2-1/2 要处理静止：停读、继续泵 VM、保持最后一帧。
+>   - **罗宾汉之死 The Death of Robin Hood**（UHD，**HDMV**）：bdjprobe ✅；18:22 **用户用 builds\local 实测正常、鼠标可点** → 用户已删除该 ISO（非 BD-J 不保留）。
+> 11-26 18:25 BD-J 鼠标：查证为普遍情况——PowerDVD 对 BD-J 盘同样不能直接用鼠标（官方说明：BD-J 内容不支持鼠标，需用遥控/方向键面板）；libbluray 会把鼠标作为 AWT 事件转给 BD-J，但光盘程序多数不处理；mpv 用同一 libbluray，同样受限。
+>   方案保持：BD-J 下鼠标左键=回车，方向键/回车/弹出菜单为主；P2-2 可加"屏幕方向键面板"（类似 PowerDVD）作为可选增强，待用户定。
+> 11-26 18:45 **P2-1 完成**（bdnav.dll API v6，dll + exe 已编译部署 builds\local，builds\local\bdj 已放 JRE17 + jar；已推送）：
+>   - dll 新接口：`bdnav_open_ex(path, BDNAV_CONFIG*)`（JAVA_HOME/LIBBLURAY_CP 在 dll 的 CRT 和进程环境里设置；预加载 JRE 自带 VC 运行库（系统没有时）；
+>     BD-J 持久存储/缓存 = 数据目录\bdj_storage\persist|cache；启动时清 %TEMP%\libbluray-bdj-cache 下 1 小时前的旧缓存）、
+>     ARGB 叠加回调（BD-J 菜单画到同一 IG 平面结构）、`BDNAV_PLANE` 加脏矩形 dx0..dy1（unlock 时清零）+ argb_source、
+>     `bdnav_read_ex`（flags BDNAV_READ_POS_JUMP = 读取位置不连续）、`bdnav_get_title_kind`、`bdnav_bdj_started`；`bdnav_set_debug(2)` 加 BD-J 日志。
+>   - 播放器：BDNavLib 加载新导出（API 版本 6，exe 和 dll 必须一起换）；CBDNavigator::Open 用 open_ex（exe目录\bdj\jre + bdj\libbluray-j2se-1.5.1.jar）；
+>     OnNotify 按脏矩形只复制/转换变化区域（m_bPlaneSynced 不同步时整帧）；ReadTS 用 read_ex。**BD-J 盘仍回退原版**（P2-2 才放开），日志会写 Java/BD-J 是否可用。
+>   - 验证：新工具 `repo\bdmenu\tools\bdnavtest.c`（通过 bdnav.dll 跑盘，每帧比对"脏矩形增量副本"与整帧）；代理 `dll` 同时编 bdnavtest.exe 到 builds\bdjprobe；
+>     `probe` 在 agent\navtest.txt 存在时用 probe_discs.txt 列表跑 bdnavtest（日志 builds\bdjprobe\navlog_<名>.txt）。
+>     结果：Odyssey 131 帧 / Poor Things 62 帧 / KARA(HDMV) 3 帧，**增量副本与整帧 0 差异**；Odyssey 增量只复制 17.9 Mpx（整帧需 271.6）。截图 artifacts p2_1_odyssey_dll_v6.png。
+>   - 待用户：用 builds\local 复测 KARA / 倩女幽魂（HDMV 回归），确认 P1.4 功能不变。下一步 P2-2：放开 BD-J、静止/IDLE 泵、黑场、按键。
+
+## ⏳ 长期待办（不排期）
+- **Java 21 下 BD-J 失败**（用户 11-26 18:22 要求进长期待办）：Odyssey/Java 21 时 libbluray VFS 缓存未按需从 ISO 拷出 `BDMV\JAR\00001\*.xml` → FileNotFoundException → MenuXlet 启动失败；Java 17 正常。
+  线索：Java 18+ 文件系统钩子（java.io.BDFileSystem / FileInputStream 补丁）行为变化；复现：`agent\request.txt` 写 probe（删 agent\probe_discs.txt 走 4 组配置）。当前交付 Java 17。
+
+## 📌 已排期待办
+- **屏幕方向键面板**（BD-J 菜单用鼠标点方向键/确定，类似 PowerDVD）：用户 11-26 18:29 同意后续排期加上，**动手前先出设计图给用户看**。计划放在 P2-2 之后。
 
 ## 1. 目标（用户需求）
 - 基于 **MPC-BE 1.9.3**（最新稳定版）改内核，实现**蓝光 ISO / BDMV 先出菜单、鼠标可操作**；参考 mpv 0.42（PR #18080）和 Yaozhil/mpv-Yaozhi。

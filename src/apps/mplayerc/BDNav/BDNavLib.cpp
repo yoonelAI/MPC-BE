@@ -14,6 +14,11 @@ static CString GetExeDir()
 	return CString(path);
 }
 
+CString BDNavGetExeDir()
+{
+	return GetExeDir();
+}
+
 CBDNavLib& CBDNavLib::Get()
 {
 	static CBDNavLib lib;
