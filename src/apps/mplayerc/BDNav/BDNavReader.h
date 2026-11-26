@@ -13,6 +13,8 @@
 
 #define BDNavReaderName L"MPC BD Navigation Source"
 
+class CBDNavReader;
+
 class CBDNavStream
 	: public CAsyncStream
 	, public CAMThread
@@ -46,6 +48,7 @@ class CBDNavStream
 		uint64_t  title90k, dur90k;
 		int       playlist;
 		uint32_t  seq;
+		uint32_t  flags;
 	};
 	CCritSec            m_csMarkers;
 	std::deque<CMarker> m_markers;
@@ -66,6 +69,8 @@ public:
 		CMD_STOP,
 		CMD_EXIT
 	};
+
+	CBDNavReader*       m_pOwner = nullptr;   // for the stream time (read-ahead limit)
 
 	CBDNavStream() = default;
 	virtual ~CBDNavStream();

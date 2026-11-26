@@ -2662,6 +2662,7 @@ void CMainFrame::OnTimer(UINT_PTR nIDEvent)
 						if (m_bBDNavActive) {
 							// BDMenu: position/duration of the current Blu-ray title (playlist)
 							CBDNavigator::Get().GetTitlePos(rtNow, rtDur);
+							BDNavUpdateChapters();   // chapters of the playlist that plays now (the disc reads ahead)
 						}
 
 						if (m_abRepeatPositionBEnabled && rtNow >= m_abRepeatPositionB) {
@@ -12901,6 +12902,11 @@ CString CMainFrame::OpenFile(OpenFileData* pOFD, const CStringW& youtubeUrl)
 				EndEnumFilters;
 			}
 
+			if (m_bBDNavActive) {
+				// BDMenu: show the disc name, not the internal "<disc>.bdnav" marker file
+				m_SessionInfo.Title = CBDNavigator::Get().GetLabel();
+			}
+
 			if (m_SessionInfo.Title.IsEmpty()) {
 				CPlaylistItem pli;
 				if (m_wndPlaylistBar.GetCur(pli)) {
@@ -12908,7 +12914,9 @@ CString CMainFrame::OpenFile(OpenFileData* pOFD, const CStringW& youtubeUrl)
 				}
 			}
 
-			if (s.bKeepHistory) {
+			// BDMenu: no position history for the navigation stream (stream time is not a disc position;
+			// BD-J discs keep their own bookmarks)
+			if (s.bKeepHistory && !m_bBDNavActive) {
 				// read file position from history
 				auto& historyFile = AfxGetMyApp()->m_HistoryFile;
 				bool found = historyFile.OpenSessionInfo(m_SessionInfo, s.bRememberFilePos);
@@ -21357,6 +21365,10 @@ void CMainFrame::SaveHistory()
 	}
 
 	auto& historyFile = AfxGetMyApp()->m_HistoryFile;
+
+	if (m_bBDNavActive || (m_SessionInfo.Path.GetLength() > 6 && m_SessionInfo.Path.Right(6).CompareNoCase(L".bdnav") == 0)) {
+		return;   // BDMenu: see OpenFile (no position history in navigation mode)
+	}
 
 	if (GetPlaybackMode() == PM_FILE) {
 		if (s.bRememberFilePos && !m_bGraphEventComplete) {

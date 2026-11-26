@@ -10,6 +10,10 @@
 #define BDNAV_MAXSTORESIZE  (3 * MEGABYTE)   // buffered TS data before the reader thread waits
 #define BDNAV_KEEPBEHIND    (512 * KILOBYTE) // data kept behind the read position
 #define BDNAV_READSIZE      (6144 * 8)        // 8 aligned units = 256 BD-TS packets (short lock hold)
+// read at most this far ahead of playback (media time). The disc navigation (BD-J menus, HDMV timers,
+// seamless menu loops) works on the read position: with low-bitrate menu clips the splitter would
+// otherwise accept a minute of data and every menu action would be delayed by that much.
+#define BDNAV_MAXAHEAD      (25000000LL)      // 2.5 s
 
 //
 // CBDNavStream
@@ -169,6 +173,13 @@ DWORD CBDNavStream::ThreadProc()
 						Sleep(10);
 						continue;
 					}
+					if (!m_SizeComplete && m_pOwner && m_RequestCmd == CMD_RUN) {
+						const REFERENCE_TIME delivered = m_rtDelivered;
+						if (delivered >= 0 && delivered - m_pOwner->GetStreamTimeNow() > BDNAV_MAXAHEAD) {
+							Sleep(10);
+							continue;
+						}
+					}
 
 					bool bEvent = false;
 					bool bFlush = false;
@@ -192,7 +203,7 @@ DWORD CBDNavStream::ThreadProc()
 					if (!markers.empty()) {
 						CAutoLock lockM(&m_csMarkers);
 						for (const auto& mk : markers) {
-							m_markers.push_back({ m_nextMarkerId++, m_len, mk.title90k, mk.dur90k, mk.playlist, mk.seq });
+							m_markers.push_back({ m_nextMarkerId++, m_len, mk.title90k, mk.dur90k, mk.playlist, mk.seq, mk.flags });
 						}
 						while (m_markers.size() > 64) {
 							m_markers.pop_front();
@@ -237,6 +248,7 @@ HRESULT CBDNavStream::SetMarkerTime(LONG id, REFERENCE_TIME rt)
 		mk.dur90k   = it->dur90k;
 		mk.playlist = it->playlist;
 		mk.seq      = it->seq;
+		mk.flags    = it->flags;
 		m_markers.erase(m_markers.begin(), it + 1);
 	}
 	CBDNavigator::Get().AddAnchor(rt, mk);
@@ -338,6 +350,7 @@ void CBDNavStream::Unlock()
 CBDNavReader::CBDNavReader(IUnknown* pUnk, HRESULT* phr)
 	: CAsyncReader(L"CBDNavReader", pUnk, &m_stream, phr, __uuidof(this))
 {
+	m_stream.m_pOwner = this;
 	if (phr) {
 		*phr = S_OK;
 	}

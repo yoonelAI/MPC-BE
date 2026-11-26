@@ -261,6 +261,8 @@ bool CBDNavigator::Open(const CString& path, HWND hNotify, CString& err)
 		m_anchors.clear();
 		m_bSeekPending = false;
 		m_chapters.clear();
+		m_chapterCache.clear();
+		m_chaptersPlaylist = -1;
 		m_chaptersGen++;
 	}
 	{
@@ -697,7 +699,15 @@ void CBDNavigator::HandleEvent(const BDNAV_EVENT& ev)
 		m_bFlushRequest = true;   // jump requested by the user: drop data buffered for the old position
 		m_dwLastFlushTick = ::GetTickCount();
 		m_flushTotal = m_total;
+		// BD-J keeps reading the old playlist until the new title starts its first playlist: drop that too
+		m_dwJumpArmTick = (ev.event == BDNAV_EV_TITLE) ? ::GetTickCount() : 0;
 		extra += L" [flush]";
+	} else if (ev.event == BDNAV_EV_PLAYLIST && m_dwJumpArmTick && ::GetTickCount() - m_dwJumpArmTick < 5000) {
+		m_dwJumpArmTick = 0;
+		m_bFlushRequest = true;
+		m_dwLastFlushTick = ::GetTickCount();
+		m_flushTotal = m_total;
+		extra += L" [flush: first playlist after the jump]";
 	}
 
 	if (ev.event == BDNAV_EV_IDLE || ev.event == BDNAV_EV_STILL_TIME || ev.event == BDNAV_EV_UO_MASK_CHANGED) {
@@ -878,18 +888,47 @@ void CBDNavigator::UpdateChapters()
 	// m_csNav held
 	std::vector<uint64_t> starts(1000);
 	const int n = CBDNavLib::Get().bdnav_get_chapters(m_nav, (uint32_t)m_playlist, starts.data(), (int)starts.size());
-	CAutoLock lock(&m_csAnchor);
-	m_chapters.clear();
+	std::vector<REFERENCE_TIME> ch;
 	for (int i = 0; i < n && i < (int)starts.size(); i++) {
-		m_chapters.push_back((REFERENCE_TIME)(starts[i] * 1000 / 9));
+		ch.push_back((REFERENCE_TIME)(starts[i] * 1000 / 9));
 	}
-	m_chaptersGen++;
+	CAutoLock lock(&m_csAnchor);
+	// the disc reads ahead of playback: published by GetChapters() when this playlist's data plays
+	m_chapterCache[m_playlist] = std::move(ch);
+	while (m_chapterCache.size() > 8) {
+		auto it = m_chapterCache.begin();
+		if (it->first == m_playlist || it->first == m_chaptersPlaylist) {
+			++it;
+		}
+		if (it == m_chapterCache.end()) {
+			break;
+		}
+		m_chapterCache.erase(it);
+	}
+	if (m_chaptersPlaylist < 0 && m_anchors.empty()) {
+		m_chapters = m_chapterCache[m_playlist];   // nothing plays yet
+		m_chaptersPlaylist = m_playlist;
+		m_chaptersGen++;
+	}
 	PostNotify();
 }
 
 bool CBDNavigator::GetChapters(std::vector<REFERENCE_TIME>& chapters, uint32_t& gen)
 {
+	const REFERENCE_TIME now = GetStreamTime();
 	CAutoLock lock(&m_csAnchor);
+	int pl = -1;
+	for (const auto& a : m_anchors) {
+		if (a.rt <= now) {
+			pl = a.playlist;
+		}
+	}
+	if (pl >= 0 && pl != m_chaptersPlaylist) {
+		auto it = m_chapterCache.find(pl);
+		m_chapters = (it != m_chapterCache.end()) ? it->second : std::vector<REFERENCE_TIME>();
+		m_chaptersPlaylist = pl;
+		m_chaptersGen++;
+	}
 	if (gen == m_chaptersGen) {
 		return false;
 	}
@@ -932,6 +971,9 @@ void CBDNavigator::QueueMarker()
 	m.dur90k   = m_playlistDur;
 	m.playlist = m_playlist;
 	m.seq      = ++m_markerSeq;
+	m.flags    = ((m_titleFlags & BDNAV_TITLE_INTERACTIVE) ? kMarkInteractive : 0)
+	           | (m_bBDJTitle ? kMarkBDJ : 0)
+	           | (m_title == 0 ? kMarkTopMenu : 0);
 	m_pendingMarkers.push_back(m);
 }
 
@@ -955,6 +997,7 @@ void CBDNavigator::AddAnchor(REFERENCE_TIME rtStream, const Marker& m)
 	a.dur      = (REFERENCE_TIME)(m.dur90k * 1000 / 9);
 	a.playlist = m.playlist;
 	a.seq      = m.seq;
+	a.flags    = m.flags;
 	{
 		CAutoLock lock(&m_csAnchor);
 		// anchors at/after this stream time belong to data that was flushed
@@ -977,21 +1020,33 @@ void CBDNavigator::AddAnchor(REFERENCE_TIME rtStream, const Marker& m)
 bool CBDNavigator::GetTitlePos(REFERENCE_TIME& pos, REFERENCE_TIME& dur)
 {
 	pos = dur = 0;
-	if (m_title == 0 || (m_titleFlags & BDNAV_TITLE_INTERACTIVE)) {
-		return true;   // top menu / interactive title: no seek bar
-	}
-	if (m_bBDJTitle && m_playlistDur < kLongTitle90k) {
-		bool menu;
-		{
-			CAutoLock lock(&m_csPlane);
-			menu = m_planeVisible;
-		}
-		if (menu) {
-			return true;   // BD-J menu over a short looping clip (e.g. language selection): no seek bar
-		}
+	bool menu;
+	{
+		CAutoLock lock(&m_csPlane);
+		menu = m_planeVisible;
 	}
 	const REFERENCE_TIME now = GetStreamTime();
 	CAutoLock lock(&m_csAnchor);
+	{
+		// title kind of the data that is playing now (the navigation reads ahead)
+		const Anchor* cur = nullptr;
+		for (const auto& a : m_anchors) {
+			if (a.rt <= now) {
+				cur = &a;
+			}
+		}
+		if (cur && !m_bSeekPending) {
+			if (cur->flags & (kMarkTopMenu | kMarkInteractive)) {
+				return true;   // top menu / interactive title: no seek bar
+			}
+			if ((cur->flags & kMarkBDJ) && cur->dur < (REFERENCE_TIME)kLongTitle90k * 1000 / 9 && menu) {
+				return true;   // BD-J menu over a short clip (e.g. language selection)
+			}
+			if ((cur->flags & kMarkBDJ) && menu && cur->dur > (REFERENCE_TIME)4 * 3600 * UNITS) {
+				return true;   // BD-J menu background loop (Poor Things: 5 h playlist)
+			}
+		}
+	}
 
 	if (m_bSeekPending) {
 		bool done = ::GetTickCount() - m_seekTick > 8000;

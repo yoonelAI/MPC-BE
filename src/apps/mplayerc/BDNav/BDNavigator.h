@@ -8,6 +8,7 @@
 #include <vector>
 #include <list>
 #include <deque>
+#include <map>
 #include <atomic>
 #include "BDNavLib.h"
 
@@ -41,7 +42,11 @@ public:
 		uint64_t dur90k;     // playlist duration, 90 kHz
 		int      playlist;
 		uint32_t seq;        // marker sequence number
+		uint32_t flags;      // kMark* (title kind when the data was read)
 	};
+	static const uint32_t kMarkInteractive = 0x01;   // interactive title: no seek bar
+	static const uint32_t kMarkBDJ         = 0x02;
+	static const uint32_t kMarkTopMenu     = 0x04;
 
 	// source filter (graph / reader thread)
 	bool StartPlayback();
@@ -188,8 +193,11 @@ private:
 	bool       m_bFallbackPosted = false;
 	std::atomic<int> m_audioPid{ -1 };
 	int        m_audioNumber = 0;
-	std::vector<REFERENCE_TIME> m_chapters;   // under m_csAnchor
+	std::vector<REFERENCE_TIME> m_chapters;   // under m_csAnchor: chapters of the playlist that is playing now
 	uint32_t   m_chaptersGen = 0;
+	int        m_chaptersPlaylist = -1;       // playlist m_chapters belong to
+	std::map<int, std::vector<REFERENCE_TIME>> m_chapterCache;   // playlist -> chapters (read ahead)
+	DWORD      m_dwJumpArmTick = 0;           // user title jump: also flush at the first new playlist (m_csNav)
 	void UpdateChapters();                    // m_csNav held
 
 	// crash protection: a disc that crashed the player is played the original way next time
@@ -208,6 +216,7 @@ private:
 		REFERENCE_TIME dur;
 		int            playlist;
 		uint32_t       seq;
+		uint32_t       flags;
 	};
 	uint32_t   m_markerSeq = 0;            // under m_csNav
 	// user seek in progress: show the target position until its data plays
