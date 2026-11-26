@@ -1,0 +1,94 @@
+name: BDJ Jars
+
+# Builds the libbluray 1.5.1 BD-J Java part (libbluray-j2se-1.5.1.jar + libbluray-awt-j2se-1.5.1.jar).
+# The native BD-J code is already inside the static bluray.lib (vcpkg 1.5.1); only the jars are missing.
+# Built with JDK 17 and JDK 21, published as release "bdj-1.5.1" so the local build agent can download them.
+on:
+  workflow_dispatch:
+  push:
+    branches: [ bdmenu-qw ]
+    paths: [ '.github/workflows/bdj.yml' ]
+
+permissions:
+  contents: write
+
+jobs:
+  jars:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        jdk: [ '17', '21' ]
+    steps:
+      - name: Setup JDK ${{ matrix.jdk }}
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.jdk }}
+
+      - name: Tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ant meson ninja-build pkg-config libxml2-dev libfreetype-dev libfontconfig-dev libudfread-dev
+          java -version; ant -version; meson --version
+
+      - name: Get libbluray 1.5.1
+        run: |
+          set -x
+          git clone --depth 1 --branch 1.5.1 --recursive https://code.videolan.org/videolan/libbluray.git src \
+            || (curl -fL -o lb.tar.xz https://download.videolan.org/pub/videolan/libbluray/1.5.1/libbluray-1.5.1.tar.xz && mkdir src && tar -xf lb.tar.xz -C src --strip-components=1)
+          ls src
+          cat src/meson_options.txt || true
+
+      - name: Build jars (meson)
+        id: meson
+        continue-on-error: true
+        run: |
+          cd src
+          meson setup build -Dbdj_jar=enabled
+          ninja -C build -v
+          find build -name '*.jar' -ls
+
+      - name: Build jars (ant fallback)
+        if: steps.meson.outcome != 'success'
+        run: |
+          cd src/src/libbluray/bdj
+          ls
+          ant -Dsrc_awt=:java-j2se -Dversion=j2se-1.5.1 -Dbuild=build -Ddist=dist || ant -p
+          find . -name '*.jar' -ls
+
+      - name: Collect + info
+        run: |
+          mkdir -p dist
+          find src -name 'libbluray*.jar' -exec cp -v {} dist/ \;
+          ls -la dist
+          test -n "$(ls dist/*.jar 2>/dev/null)"
+          {
+            echo "jdk=${{ matrix.jdk }}"; java -version 2>&1
+            for j in dist/*.jar; do echo "== $j"; unzip -l "$j" | tail -1; done
+            first=$(unzip -Z1 dist/libbluray-j2se-1.5.1.jar | grep '\.class$' | head -1)
+            echo "class major version of $first:"; unzip -p dist/libbluray-j2se-1.5.1.jar "$first" | head -c 8 | od -An -tu1
+            echo "== SecurityManager usage"
+            grep -rn "SecurityManager\|java.security.manager" src/src/libbluray/bdj/java* | head -60
+            echo "== bdj.c JVM options"
+            grep -n '"-D\|"--\|"-X' src/src/libbluray/bdj/bdj.c | head -60
+          } > dist/info-jdk${{ matrix.jdk }}.txt 2>&1
+          cat dist/info-jdk${{ matrix.jdk }}.txt
+          cd dist && zip -9 ../libbluray-bdj-1.5.1-jdk${{ matrix.jdk }}.zip *
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: libbluray-bdj-1.5.1-jdk${{ matrix.jdk }}
+          path: libbluray-bdj-1.5.1-jdk${{ matrix.jdk }}.zip
+
+      - name: Publish release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view bdj-1.5.1 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1 \
+            || gh release create bdj-1.5.1 --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease \
+                 --title "libbluray 1.5.1 BD-J jars" --notes "BD-J jars for MPC-BE BDMenu (P2). Built by bdj.yml." \
+            || sleep 5
+          gh release upload bdj-1.5.1 libbluray-bdj-1.5.1-jdk${{ matrix.jdk }}.zip --repo "$GITHUB_REPOSITORY" --clobber
