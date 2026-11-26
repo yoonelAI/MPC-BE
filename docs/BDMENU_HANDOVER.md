@@ -100,6 +100,13 @@
 >   4K HEVC 从片段中间开始时，前 5MB（约 0.5 秒）里没有参数集，MPEG 分离器流式探测（5MB/5 秒）没找到视频流。（另一次同样操作能出画面，看续播点运气。）
 >   21:41 修复（已编译部署，待测）：MpegSplitterFile::Init 流式 + m_bIsBD（=导航模式）且 5MB 内没找到视频、clip info 有视频 → 继续搜到 64MB（15 秒上限）。
 >   说明给用户：主菜单 PLAY 从上次位置续播 = 环球 BD-J 光盘自己的书签行为（真机同样），从头看用章节菜单或拖进度条。
+> 11-26 22:15 用户测：Odyssey 回标题再 PLAY 有画面 → **P2-3 完成**，进入 **P2-4 收尾打包**。
+>   已做：删除 builds\local\bdnav_debug.txt（关详细日志）；README 改为 P2（repo\bdmenu\packaging\BDMenu-README.txt）；
+>   distrib\mpc-be_setup.iss 加 `#ifdef BDMenu`（bdnav.dll、README、bdj\* 递归；卸载项名后缀 " + BDMenu P2"；AppId 不变 = 覆盖原版）；
+>   新 tools\make_release.cmd（绿色版：robocopy builds\local 排除日志/调试/bdj_storage/pdb，新建 mpc-be64.ini，tar -a 打 zip；
+>   安装版：没有 Inno Setup 就下载装到 E:\AI\tools\InnoSetup6（/CURRENTUSER），DirectX dll 从 builds\local 补到 MPC_components\DirectX\x64，ISCC /DBDMenu /F 名字）；
+>   代理新命令 `release`（版本名 agent\release_ver.txt）。**改了 build_agent.cmd → 需用户重开代理**。
+>   发布顺序：push → full（exe 与 Lang 同修订号）→ release。产物 release\MPC-BE.1.9.3-BDMenu-P2.x64-portable.zip / -setup.exe。
 
 ## ⏳ 长期待办（不排期）
 - **Java 21 下 BD-J 失败**（用户 11-26 18:22 要求进长期待办）：Odyssey/Java 21 时 libbluray VFS 缓存未按需从 ISO 拷出 `BDMV\JAR\00001\*.xml` → FileNotFoundException → MenuXlet 启动失败；Java 17 正常。

@@ -72,6 +72,16 @@
 #define mpcscriptsrc_desc = "MPC Script Source 0.2.17"
 #define mpcimagesrc_desc = "MPC Image Source 0.3.6"
 
+; BDMenu (Blu-ray menus): iscc /DBDMenu /DBDMenuVer=P2 /DBDMenuDir=<folder with bdnav.dll, BDMenu-README.txt, bdj\>
+#ifdef BDMenu
+  #ifndef BDMenuVer
+    #define BDMenuVer "P2"
+  #endif
+  #define bdmenu_disp " + BDMenu " + BDMenuVer
+#else
+  #define bdmenu_disp ""
+#endif
+
 [Setup]
 #ifdef Win32Build
 AppId={{903D098F-DD50-4342-AD23-DA868FCA3126}
@@ -86,11 +96,11 @@ VersionInfoProductName={#app_name}
 AppId={{FE09AF6D-78B2-4093-B012-FCDAF78693CE}
 DefaultGroupName={#app_name} x64
 OutputBaseFilename={#app_name}.{#app_version}.x64
-UninstallDisplayName={#app_name} x64 {#app_version}
+UninstallDisplayName={#app_name} x64 {#app_version}{#bdmenu_disp}
 ArchitecturesAllowed=x64 arm64
 ArchitecturesInstallIn64BitMode=x64 arm64
 AppName={#app_name} x64
-AppVerName={#app_name} x64 {#app_version}
+AppVerName={#app_name} x64 {#app_version}{#bdmenu_disp}
 VersionInfoDescription={#app_name} x64 Setup
 VersionInfoProductName={#app_name} x64
 #endif
@@ -263,7 +273,16 @@ Source: "MPC_components\MpcScriptSource\MpcScriptSource64.ax"; DestDir: "{app}\F
 Source: "MPC_components\MpcImageSource\MpcImageSource64.ax"; DestDir: "{app}\Filters"; Flags: regserver; Components: mpcimagesrc;
 #endif
 
+#ifdef BDMenu
+Source: "{#BDMenuDir}\bdnav.dll";         DestDir: "{app}";     Flags: ignoreversion; Components: main
+Source: "{#BDMenuDir}\BDMenu-README.txt"; DestDir: "{app}";     Flags: ignoreversion; Components: main
+Source: "{#BDMenuDir}\bdj\*";             DestDir: "{app}\bdj"; Flags: ignoreversion recursesubdirs createallsubdirs; Components: main
+#endif
+
 [Icons]
+#ifdef BDMenu
+Name: {group}\BDMenu README;                         Filename: {app}\BDMenu-README.txt; WorkingDir: {app}
+#endif
 #ifdef Win32Build
 Name: {group}\{#app_name};                           Filename: {app}\{#mpcbe_exe};      Comment: {#app_name} {#app_version};            WorkingDir: {app}; IconFilename: {app}\{#mpcbe_exe}; IconIndex: 0
 Name: {commondesktop}\{#app_name};                   Filename: {app}\{#mpcbe_exe};      Comment: {#app_name} {#app_version};            WorkingDir: {app}; IconFilename: {app}\{#mpcbe_exe}; IconIndex: 0; Tasks: desktopicon\common
