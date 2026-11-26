@@ -85,6 +85,9 @@
 >   - BD-J 菜单出现闸门：无用户输入时菜单从无到有 → 在读取位置排一个 kMarkMenuShow 标记，等视频播到该处（或 4 秒超时）才显示（PollShowGate，进度轮询里检查）。
 >   - BD-J 片头/警告等短播放列表（<10 分钟）里方向键/回车交给光盘（WantsRemoteKeys），不再触发 MPC 快进；正片里仍是快进。
 >   - 窗口标题 = 光盘标题（BD 元数据/卷标，如 "The Odyssey"），没有才用文件名。
+> 11-26 20:55 用户测：**Odyssey 正常、KARA 正常；Poor Things 字幕有效、进度条正常**，只剩进入正片后章节刻度延迟出现（等第一个时间锚点 ~3 秒）。
+>   20:57 修复（已编译部署）：GetChapters 在新图还没有到达任何锚点时，用第一个锚点的播放列表 / 建图时的播放列表（m_segPlaylist）。
+>   **P2-2 主体完成**。剩余 P2-3（字幕/音轨双向同步：播放器里切换写回光盘 bd_select_stream）、P2-4（稳定性、打包安装版+绿色版）。
 
 ## ⏳ 长期待办（不排期）
 - **Java 21 下 BD-J 失败**（用户 11-26 18:22 要求进长期待办）：Odyssey/Java 21 时 libbluray VFS 缓存未按需从 ISO 拷出 `BDMV\JAR\00001\*.xml` → FileNotFoundException → MenuXlet 启动失败；Java 17 正常。

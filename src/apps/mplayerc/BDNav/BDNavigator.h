@@ -210,6 +210,7 @@ private:
 	std::vector<REFERENCE_TIME> m_chapters;   // under m_csAnchor: chapters of the playlist that is playing now
 	uint32_t   m_chaptersGen = 0;
 	int        m_chaptersPlaylist = -1;       // playlist m_chapters belong to
+	std::atomic<int> m_segPlaylist{ -1 };      // playlist the current graph was built for (first data of the graph)
 	std::map<int, std::vector<REFERENCE_TIME>> m_chapterCache;   // playlist -> chapters (read ahead)
 	DWORD      m_dwJumpArmTick = 0;           // user title jump: also flush at the first new playlist (m_csNav)
 	void UpdateChapters();                    // m_csNav held

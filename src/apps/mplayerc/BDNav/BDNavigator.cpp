@@ -369,6 +369,7 @@ CString CBDNavigator::PrepareClipInfoPath()
 	const CString clipW = BDNavUTF8ToW(clip);
 	CString m;
 	m.Format(L"graph built for clip %s (%05d.mpls item %d): %s", clipW.GetString(), m_playlist, m_playitem, BDNavUTF8ToW(desc).GetString());
+	m_segPlaylist = m_playlist;
 	BDNavLog(m);
 	m_bGraphSig = ClipSig(m_playlist, m_playitem, m_graphSigV, m_graphSigA);
 	{
@@ -950,6 +951,10 @@ bool CBDNavigator::GetChapters(std::vector<REFERENCE_TIME>& chapters, uint32_t& 
 		if (a.rt <= now) {
 			pl = a.playlist;
 		}
+	}
+	if (pl < 0) {
+		// new graph, no time anchor reached yet: its first data belongs to the playlist it was built for
+		pl = !m_anchors.empty() ? m_anchors.front().playlist : m_segPlaylist.load();
 	}
 	if (pl >= 0 && pl != m_chaptersPlaylist) {
 		auto it = m_chapterCache.find(pl);
