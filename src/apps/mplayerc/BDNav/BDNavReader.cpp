@@ -100,7 +100,8 @@ void CBDNavStream::CheckBuffer()
 void CBDNavStream::TruncateUnread()
 {
 	// drop data that was buffered but not read yet (old position after a user jump)
-	CAutoLock cAutoLock(&m_csLock);
+	// NOTE: no m_csLock here: CAsyncRequest::Complete holds it while the splitter waits in Read()
+	// for new data, which this (reader) thread has to deliver -> deadlock (P2-2, Poor Things)
 	CAutoLock cPacketLock(&m_csPacketsLock);
 
 	const ULONGLONG cut = ((m_pos + 191) / 192) * 192;

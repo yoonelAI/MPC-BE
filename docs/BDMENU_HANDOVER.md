@@ -46,12 +46,26 @@
 >   - 菜单显示时新增按键：0-9（含小键盘）、F1-F4 = 红绿黄蓝。
 >   - 已知限制：BD-J 只画图形不放任何播放列表的菜单（没有视频）→ 25 秒无数据回退原版（需要时再做黑场视频）；BD-J 弹出菜单里的"缩小视频窗"不支持（视频仍全屏，在图形下面）。
 >   - 本轮测试开了详细日志：builds\local\bdnav_debug.txt（**测完删除**），旧日志移到 builds\logs_archive\1126_1907_bdnav.log。
+> 11-26 19:19 用户测 P2-2 第一版：**Odyssey** 启动约 5 秒；鼠标点击=确定、方向键可操作；字幕有；PageUp/Down、Ctrl+M（弹出菜单 + 画中画小窗，下面按钮可操作）正常；
+>   但 PLAY 后 FBI 警告一闪就进正片。**Poor Things** 片头上的语言菜单（从上到下）→ 闪一下（1611→1355 音频 DTS-HD→LPCM 重建图）→ 换背景的语言菜单（带进度条）可选；
+>   选语言后 PLAY **卡住**，按暂停**播放器卡死**（被 blocklist 加入，已手动清除）。KARA 正常。
+>   19:25 修复（已编译部署，已推送）：
+>   - **卡死根因 = 死锁**：CAsyncRequest::Complete 在 Read() 等数据期间持有流的 m_csLock；读取线程遇用户跳转 flush 时 TruncateUnread 也要 m_csLock →
+>     BD-J 静止菜单（无数据、分离器在 Read 里等）+ 回车跳转 = 互等。TruncateUnread 改为只用 m_csPacketsLock。
+>   - **FBI 一闪**：用户跳转后 3 秒内的格式变化会"立即重建、丢弃旧数据"，但 Odyssey 在 0.2 秒内就读完了 21 秒警告片（00004+00100）→ 被丢。
+>     改为按字节判断：跳转后读了 <1MB 就遇到格式变化才立即重建，否则播完再重建（m_flushTotal）。
+>   - END_OF_TITLE 连发几百次：不再当"有事件"空转，日志只记第一条。
+>   - BD-J 菜单（短播放列表 <10 分钟 + 菜单可见）及 interactive 标题不显示进度条。
+>   - 启动 5 秒分析：JVM 0.3 秒、Xlet 1 秒内就绪，之后光盘程序自己等约 4 秒（读 loading 资源）才放第一个播放列表 → 期间没有视频图，画面空白。
+>     → 进**已排期待办**：先建"黑场视频图"让光盘的 loading 画面立刻显示（感知启动 ~1 秒）。
 
 ## ⏳ 长期待办（不排期）
 - **Java 21 下 BD-J 失败**（用户 11-26 18:22 要求进长期待办）：Odyssey/Java 21 时 libbluray VFS 缓存未按需从 ISO 拷出 `BDMV\JAR\00001\*.xml` → FileNotFoundException → MenuXlet 启动失败；Java 17 正常。
   线索：Java 18+ 文件系统钩子（java.io.BDFileSystem / FileInputStream 补丁）行为变化；复现：`agent\request.txt` 写 probe（删 agent\probe_discs.txt 走 4 组配置）。当前交付 Java 17。
 
 ## 📌 已排期待办
+- **BD-J 启动加速**（用户 11-26 19:19：Odyssey 启动 5 秒"想办法加速或放入待办"）：JVM 只占 0.3 秒，其余是光盘程序自己的初始化；
+  方案：Xlet 一启动就建一个黑场视频图（内置 1080p 黑帧 TS），BD-J loading 画面立刻可见，第一个播放列表来时再重建。可能再试：JVM 预热（播放器启动后空闲时创建）。
 - **屏幕方向键面板**（BD-J 菜单用鼠标点方向键/确定，类似 PowerDVD）：用户 11-26 18:29 同意后续排期加上，**动手前先出设计图给用户看**。计划放在 P2-2 之后。
 
 ## 1. 目标（用户需求）

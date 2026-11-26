@@ -550,7 +550,7 @@ int CBDNavigator::ReadTS(BYTE* out, int outcap, bool& bEvent, bool& bFlush, std:
 	}
 	if (ev.event != BDNAV_EV_NONE) {
 		// idle (BD-J menu without a playlist) / still picture: no data, the reader thread waits a bit
-		bEvent = ev.event != BDNAV_EV_IDLE && ev.event != BDNAV_EV_STILL_TIME;
+		bEvent = ev.event != BDNAV_EV_IDLE && ev.event != BDNAV_EV_STILL_TIME && ev.event != BDNAV_EV_END_OF_TITLE;
 		HandleEvent(ev);
 		if (ev.event == BDNAV_EV_ENCRYPTED) {
 			return -1;
@@ -563,7 +563,9 @@ int CBDNavigator::ReadTS(BYTE* out, int outcap, bool& bEvent, bool& bFlush, std:
 			bFlush = m_bFlushRequest.exchange(false);
 			m_bRebuildPending = true;
 			// a user jump (menu button, top menu) into another format: the old data is obsolete -> rebuild now
-			const bool bNow = bFlush || (m_dwLastFlushTick && ::GetTickCount() - m_dwLastFlushTick < 3000);
+			// (by bytes, not time: the disc reads far ahead, e.g. Odyssey PLAY -> 21 s of warnings read in 0.2 s)
+			const bool bNow = bFlush || (m_dwLastFlushTick && ::GetTickCount() - m_dwLastFlushTick < 3000
+				&& m_total - m_flushTotal < 1024 * 1024);
 			if (m_hNotify) {
 				::PostMessageW(m_hNotify, WM_BDNAV_NOTIFY, kNotifyRebuild, bNow ? 1 : 0);
 			}
@@ -694,12 +696,15 @@ void CBDNavigator::HandleEvent(const BDNAV_EVENT& ev)
 		m_bUserJumpPending = false;
 		m_bFlushRequest = true;   // jump requested by the user: drop data buffered for the old position
 		m_dwLastFlushTick = ::GetTickCount();
+		m_flushTotal = m_total;
 		extra += L" [flush]";
 	}
 
 	if (ev.event == BDNAV_EV_IDLE || ev.event == BDNAV_EV_STILL_TIME || ev.event == BDNAV_EV_UO_MASK_CHANGED) {
 		bLog = false;   // repeated many times per second
 	}
+	const bool bRepeat = (ev.event == BDNAV_EV_END_OF_TITLE && m_lastEvent == BDNAV_EV_END_OF_TITLE);
+	m_lastEvent = ev.event;
 	switch (ev.event) {
 	case BDNAV_EV_TITLE: case BDNAV_EV_PLAYLIST: case BDNAV_EV_MENU: case BDNAV_EV_STILL:
 	case BDNAV_EV_END_OF_TITLE: case BDNAV_EV_ERROR: case BDNAV_EV_READ_ERROR: case BDNAV_EV_ENCRYPTED:
@@ -708,7 +713,7 @@ void CBDNavigator::HandleEvent(const BDNAV_EVENT& ev)
 	default:
 		break;
 	}
-	if (bLog && m_logBudget > 0) {
+	if (bLog && !bRepeat && m_logBudget > 0) {
 		m_logBudget--;
 		CString m;
 		m.Format(L"event %s %u%s (read %.1f MB)", EventName(ev.event), ev.param, extra.GetString(), m_total / 1048576.0);
@@ -972,8 +977,18 @@ void CBDNavigator::AddAnchor(REFERENCE_TIME rtStream, const Marker& m)
 bool CBDNavigator::GetTitlePos(REFERENCE_TIME& pos, REFERENCE_TIME& dur)
 {
 	pos = dur = 0;
-	if (m_title == 0) {
-		return true;   // top menu: no seek bar
+	if (m_title == 0 || (m_titleFlags & BDNAV_TITLE_INTERACTIVE)) {
+		return true;   // top menu / interactive title: no seek bar
+	}
+	if (m_bBDJTitle && m_playlistDur < kLongTitle90k) {
+		bool menu;
+		{
+			CAutoLock lock(&m_csPlane);
+			menu = m_planeVisible;
+		}
+		if (menu) {
+			return true;   // BD-J menu over a short looping clip (e.g. language selection): no seek bar
+		}
 	}
 	const REFERENCE_TIME now = GetStreamTime();
 	CAutoLock lock(&m_csAnchor);
