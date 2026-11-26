@@ -94,6 +94,12 @@
 >     光盘 → 播放器同步后、BDNavAfterOpen 后更新一致值；重建/打开时置未知（只初始化不写）。外挂字幕不改光盘。光盘拒绝（UO 掩码）时返回 0，日志 "player -> disc ... (no change or not allowed)"。
 >   - 菜单叠在字幕上：CBDMenuSubPicProvider 持有当前字幕 provider（SetInner）；Render 先画字幕再把菜单 alpha 混合上去（RenderMenu bBlend，BlendSubpic 预乘/反 alpha）；
 >     同步队列分段 = 到字幕下一次变化为止（≤1 秒）；纹理尺寸用字幕的（菜单缩放进去）。UpdateSubtitle/SetSubtitle 改走 BDNavSetSubProvider：菜单显示时换字幕不会把菜单顶掉。
+> 11-26 21:37 用户测 P2-3：**Poor Things 正常**（关字幕后光盘 SET UP 显示 None）、**KARA 正常**；Odyssey 光盘 SETUP 字幕与右键选择一致（双向同步生效），Ctrl+M 弹出菜单正常。
+>   **用户要求：以后一律用中文回复**（英文有些说法会误解）。
+>   问题：Odyssey 正片中 右键→标题菜单→PLAY **只有声音没画面**。日志：续播点在正片中间（SEEK 76155968），重建的图里**没有视频解码器/渲染器**——
+>   4K HEVC 从片段中间开始时，前 5MB（约 0.5 秒）里没有参数集，MPEG 分离器流式探测（5MB/5 秒）没找到视频流。（另一次同样操作能出画面，看续播点运气。）
+>   21:41 修复（已编译部署，待测）：MpegSplitterFile::Init 流式 + m_bIsBD（=导航模式）且 5MB 内没找到视频、clip info 有视频 → 继续搜到 64MB（15 秒上限）。
+>   说明给用户：主菜单 PLAY 从上次位置续播 = 环球 BD-J 光盘自己的书签行为（真机同样），从头看用章节菜单或拖进度条。
 
 ## ⏳ 长期待办（不排期）
 - **Java 21 下 BD-J 失败**（用户 11-26 18:22 要求进长期待办）：Odyssey/Java 21 时 libbluray VFS 缓存未按需从 ISO 拷出 `BDMV\JAR\00001\*.xml` → FileNotFoundException → MenuXlet 启动失败；Java 17 正常。

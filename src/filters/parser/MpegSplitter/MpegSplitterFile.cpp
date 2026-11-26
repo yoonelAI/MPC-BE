@@ -236,6 +236,26 @@ HRESULT CMpegSplitterFile::Init(IAsyncReader* pAsyncReader)
 
 		stop = IsStreaming() ? 5 * MEGABYTE : std::min(10LL * MEGABYTE, GetLength());
 		SearchStreams(0, stop, m_pmt_streams.empty() ? 2000 : 5000);
+
+		if (IsStreaming() && m_bIsBD && m_streams[stream_type::video].empty()) {
+			// BDMenu navigation stream that starts in the middle of a clip (resume / seek, e.g. 4K HEVC):
+			// the first parameter sets can be more than 5 MB away -> keep searching if the clip has video
+			bool bClipVideo = false;
+			for (const auto& cs : m_ClipInfo.GetStreams()) {
+				switch (cs.m_Type) {
+					case VIDEO_STREAM_MPEG1: case VIDEO_STREAM_MPEG2: case VIDEO_STREAM_H264:
+					case VIDEO_STREAM_HEVC: case VIDEO_STREAM_VC1: case VIDEO_STREAM_H264_MVC:
+						bClipVideo = true;
+						break;
+					default:
+						break;
+				}
+			}
+			if (bClipVideo) {
+				DLog(L"CMpegSplitterFile::Init() : BD navigation, no video in the first 5 MB -> search up to 64 MB");
+				SearchStreams(stop, 64 * MEGABYTE, 15000);
+			}
+		}
 	}
 
 	if (!m_bIsBD) {
