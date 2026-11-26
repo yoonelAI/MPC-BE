@@ -521,7 +521,7 @@ BDNAV_EXPORT int bdnav_get_title_kind(BDNAV* nav, uint32_t title)
 	if (title == 0xFFFF) t = di->first_play;
 	else if (title == 0) t = di->top_menu;
 	else if (title <= di->num_titles && di->titles) t = di->titles[title];
-	return t ? (t->bdj ? 1 : 0) : -1;
+	return t ? ((t->bdj ? BDNAV_TITLE_BDJ : 0) | (t->interactive ? BDNAV_TITLE_INTERACTIVE : 0)) : -1;
 }
 
 BDNAV_EXPORT void bdnav_close(BDNAV* nav)

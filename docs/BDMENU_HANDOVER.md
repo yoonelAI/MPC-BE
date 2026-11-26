@@ -32,6 +32,20 @@
 >     `probe` 在 agent\navtest.txt 存在时用 probe_discs.txt 列表跑 bdnavtest（日志 builds\bdjprobe\navlog_<名>.txt）。
 >     结果：Odyssey 131 帧 / Poor Things 62 帧 / KARA(HDMV) 3 帧，**增量副本与整帧 0 差异**；Odyssey 增量只复制 17.9 Mpx（整帧需 271.6）。截图 artifacts p2_1_odyssey_dll_v6.png。
 >   - 待用户：用 builds\local 复测 KARA / 倩女幽魂（HDMV 回归），确认 P1.4 功能不变。下一步 P2-2：放开 BD-J、静止/IDLE 泵、黑场、按键。
+> 11-26 18:54 用户复测 P2-1：**KARA、倩女幽魂正常**（HDMV 无回归）。
+>   - 倩女幽魂"标题菜单"= 正片中的**光盘弹出菜单**（透明悬浮、背景电影继续播，日志 user: pop-up menu -> 1 / MENU 1），"根菜单"= Top Menu，**属正确行为**（以前没注意到）。
+>   - **输入法 bug**：播放器在前台时输入法显示英文、点别的窗口变回中文。原因：P1.3（11-25 20:00）为修快捷键在主窗口/视频窗口 ImmAssociateContextEx(NULL) 禁用了 IME。
+>     18:57 修复（已编译部署 builds\local，未推送）：不再禁用 IME；PreTranslateMessage 遇 VK_PROCESSKEY（Edit/RichEdit/ComboBox 除外）还原真实按键后
+>     ImmNotifyIME(NI_COMPOSITIONSTR, CPS_CANCEL) + NI_CLOSECANDIDATE 取消候选。待用户复测：中文输入法下前台仍显示中文，且字母/方向键/空格/PageUp 等快捷键仍有效、不弹候选框。
+> 11-26 19:06 **P2-2 第一版**（已编译部署 builds\local，已推送）：BD-J 盘不再回退，进入导航模式（需 exe目录\bdj\jre + jar，缺失或 bdj_handled=0 仍回退）。
+>   - 首次取数据等待：BD-J 盘 25 秒（JVM + Xlet 启动，Odyssey 首个播放列表约 5.9 秒才出数据），HDMV 仍 3 秒；日志 "stream: first data after N ms"。
+>   - IDLE / STILL_TIME 事件不再算"有事件"→ 读取线程 Sleep(10)，不再空转。
+>   - 菜单变化后 80ms 若还没有一帧画出它（静止画面/空闲，没有新视频帧）→ m_pCAP->Paint(false)（TIMER_BDNAV_REPAINT，IsRenderPending）。
+>   - BD-J 标题（TITLE 事件 + bdnav_get_title_kind：BDNAV_TITLE_BDJ/INTERACTIVE）：鼠标悬停转发；点击 = 光盘报告命中时 MOUSE_ACTIVATE，否则 ENTER；
+>     Ctrl+M 直接发 POPUP 键（BD-J 不发 POPUP 事件）；自动调菜单也用 POPUP；读取位置无事件跳变 → 新时间锚点。
+>   - 菜单显示时新增按键：0-9（含小键盘）、F1-F4 = 红绿黄蓝。
+>   - 已知限制：BD-J 只画图形不放任何播放列表的菜单（没有视频）→ 25 秒无数据回退原版（需要时再做黑场视频）；BD-J 弹出菜单里的"缩小视频窗"不支持（视频仍全屏，在图形下面）。
+>   - 本轮测试开了详细日志：builds\local\bdnav_debug.txt（**测完删除**），旧日志移到 builds\logs_archive\1126_1907_bdnav.log。
 
 ## ⏳ 长期待办（不排期）
 - **Java 21 下 BD-J 失败**（用户 11-26 18:22 要求进长期待办）：Odyssey/Java 21 时 libbluray VFS 缓存未按需从 ISO 拷出 `BDMV\JAR\00001\*.xml` → FileNotFoundException → MenuXlet 启动失败；Java 17 正常。

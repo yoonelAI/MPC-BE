@@ -152,7 +152,7 @@ bool CBDNavigator::Open(const CString& path, HWND hNotify, CString& err)
 	}
 
 	m_bVerbose = BDNavIsVerbose();
-	lib.bdnav_set_debug(m_bVerbose ? 1 : 0);
+	lib.bdnav_set_debug(m_bVerbose ? 2 : 0);
 
 	const CString root = BDNavGetDiscRoot(path);
 	CheckCrashLock();
@@ -194,9 +194,10 @@ bool CBDNavigator::Open(const CString& path, HWND hNotify, CString& err)
 		reason = L"BD+ protected";
 	} else if (di.no_menu_support || (!di.first_play_supported && !di.top_menu_supported)) {
 		reason = L"no HDMV navigation";
-	} else if (di.num_bdj_titles > 0 || di.bdj_detected) {
-		reason.Format(L"BD-J disc (not supported yet; Java %s, BD-J %s)",
-			bHaveJava ? L"bundled" : L"missing", di.bdj_handled ? L"usable" : L"not usable");
+	} else if ((di.num_bdj_titles > 0 || di.bdj_detected) && !bHaveJava) {
+		reason = L"BD-J disc, bundled Java missing (bdj\\jre, bdj\\libbluray-j2se-1.5.1.jar)";
+	} else if ((di.num_bdj_titles > 0 || di.bdj_detected) && !di.bdj_handled) {
+		reason = L"BD-J disc, Java not usable";
 	}
 	if (!reason.IsEmpty()) {
 		lib.bdnav_close(nav);
@@ -247,6 +248,10 @@ bool CBDNavigator::Open(const CString& path, HWND hNotify, CString& err)
 		m_carry.clear();
 		m_pgNumber = 0;
 		m_pgEnabled = false;
+		m_bBDJDisc = di.num_bdj_titles > 0 || di.bdj_detected;
+		m_bBDJTitle = false;
+		m_titleFlags = 0;
+		m_keyInterest = -1;
 	}
 	m_bPgDirty = false;
 	m_bRebuildPending = false;
@@ -280,8 +285,9 @@ bool CBDNavigator::Open(const CString& path, HWND hNotify, CString& err)
 	}
 
 	CString msg;
-	msg.Format(L"Navigation mode: \"%s\" titles=%d HDMV=%d region=%d | %s",
-		m_strLabel.GetString(), di.num_titles, di.num_hdmv_titles, region, root.GetString());
+	msg.Format(L"Navigation mode: \"%s\" titles=%d HDMV=%d BD-J=%d%s region=%d | %s",
+		m_strLabel.GetString(), di.num_titles, di.num_hdmv_titles, di.num_bdj_titles,
+		m_bBDJDisc ? L" (bundled Java 17)" : L"", region, root.GetString());
 	BDNavLog(msg);
 	FlushLibLog();
 
@@ -534,12 +540,17 @@ int CBDNavigator::ReadTS(BYTE* out, int outcap, bool& bEvent, bool& bFlush, std:
 	BDNAV_EVENT ev = {};
 	uint32_t rflags = 0;
 	const int r = CBDNavLib::Get().bdnav_read_ex(m_nav, out, want, &ev, &rflags);
-	if ((rflags & BDNAV_READ_POS_JUMP) && ev.event == BDNAV_EV_NONE && m_bVerbose && m_logBudget > 0) {
-		m_logBudget--;
-		BDNavLog(L"read position jumped without an event");
+	if ((rflags & BDNAV_READ_POS_JUMP) && ev.event == BDNAV_EV_NONE && m_bBDJDisc) {
+		// BD-J moved the playback position without telling us: new time anchor for the progress bar
+		QueueMarker();
+		if (m_bVerbose && m_logBudget > 0) {
+			m_logBudget--;
+			BDNavLog(L"read position jumped without an event (BD-J) -> new time anchor");
+		}
 	}
 	if (ev.event != BDNAV_EV_NONE) {
-		bEvent = true;
+		// idle (BD-J menu without a playlist) / still picture: no data, the reader thread waits a bit
+		bEvent = ev.event != BDNAV_EV_IDLE && ev.event != BDNAV_EV_STILL_TIME;
 		HandleEvent(ev);
 		if (ev.event == BDNAV_EV_ENCRYPTED) {
 			return -1;
@@ -600,11 +611,22 @@ void CBDNavigator::HandleEvent(const BDNAV_EVENT& ev)
 	bool bLog = m_bVerbose;
 
 	switch (ev.event) {
-	case BDNAV_EV_TITLE:
+	case BDNAV_EV_TITLE: {
 		m_title = (int)ev.param;
 		m_titleTick = ::GetTickCount();
 		m_titleBytes = m_total;
 		bJump = true;
+		const int kind = lib.bdnav_get_title_kind(m_nav, ev.param);
+		m_titleFlags = kind > 0 ? kind : 0;
+		m_bBDJTitle = kind >= 0 && (kind & BDNAV_TITLE_BDJ);
+		extra.Format(L" (%s%s)", m_bBDJTitle ? L"BD-J" : L"HDMV", (m_titleFlags & BDNAV_TITLE_INTERACTIVE) ? L", interactive" : L"");
+		break;
+	}
+	case BDNAV_EV_KEY_INTEREST_TABLE:
+		if ((int)ev.param != m_keyInterest) {
+			m_keyInterest = (int)ev.param;
+			bLog = true;
+		}
 		break;
 	case BDNAV_EV_PLAYLIST: {
 		m_playlist = (int)ev.param;
@@ -675,6 +697,9 @@ void CBDNavigator::HandleEvent(const BDNAV_EVENT& ev)
 		extra += L" [flush]";
 	}
 
+	if (ev.event == BDNAV_EV_IDLE || ev.event == BDNAV_EV_STILL_TIME || ev.event == BDNAV_EV_UO_MASK_CHANGED) {
+		bLog = false;   // repeated many times per second
+	}
 	switch (ev.event) {
 	case BDNAV_EV_TITLE: case BDNAV_EV_PLAYLIST: case BDNAV_EV_MENU: case BDNAV_EV_STILL:
 	case BDNAV_EV_END_OF_TITLE: case BDNAV_EV_ERROR: case BDNAV_EV_READ_ERROR: case BDNAV_EV_ENCRYPTED:
@@ -884,7 +909,7 @@ void CBDNavigator::CheckAutoMenu()
 
 	m_bAutoMenuDone = true;
 	auto& lib = CBDNavLib::Get();
-	if (m_popupAvail) {
+	if (m_popupAvail || m_bBDJTitle) {
 		lib.bdnav_user_input(m_nav, -1, BDNAV_KEY_POPUP);
 		BDNavLog(L"auto menu: main title started without menu -> pop-up menu");
 	} else {
@@ -1130,6 +1155,12 @@ void CBDNavigator::PostNotify()
 	}
 }
 
+bool CBDNavigator::IsRenderPending()
+{
+	CAutoLock lock(&m_csPlane);
+	return m_bOverlayOn && m_planeVisible && m_planeVersion != m_lastRenderedVersion;
+}
+
 bool CBDNavigator::IsMenuVisible()
 {
 	CAutoLock lock(&m_csPlane);
@@ -1168,6 +1199,21 @@ bool CBDNavigator::Mouse(int x, int y, int vw, int vh, bool bClick)
 
 	m_dwInputTick = ::GetTickCount();
 	const int r = lib.bdnav_mouse_select(m_nav, -1, px, py);
+	if (m_bBDJTitle) {
+		// BD-J menus are made for the remote control and rarely handle the mouse:
+		// a click activates the button under the cursor if the disc reports one, otherwise it is ENTER
+		if (!bClick) {
+			return false;
+		}
+		UserAction();
+		const uint32_t key = r > 0 ? BDNAV_KEY_MOUSE_ACTIVATE : BDNAV_KEY_ENTER;
+		const int r2 = lib.bdnav_user_input(m_nav, -1, key);
+		CString m;
+		m.Format(L"mouse click (%d,%d) BD-J select=%d -> %s %d", px, py, r, r > 0 ? L"activate" : L"ENTER", r2);
+		BDNavLog(m);
+		FlushLibLog();
+		return true;
+	}
 	if (bClick) {
 		int r2 = -100;
 		if (r > 0) {
@@ -1215,7 +1261,7 @@ void CBDNavigator::Popup()
 	}
 	UserAction();
 	auto& lib = CBDNavLib::Get();
-	if (m_popupAvail) {
+	if (m_popupAvail || m_bBDJTitle) {   // BD-J: the Xlet decides (no POPUP event)
 		const int r = lib.bdnav_user_input(m_nav, -1, BDNAV_KEY_POPUP);
 		CString m;
 		m.Format(L"user: pop-up menu -> %d", r);

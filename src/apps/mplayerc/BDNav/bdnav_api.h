@@ -161,6 +161,12 @@ typedef struct {
 	int         reserved[8];
 } BDNAV_CONFIG;
 
+/* bdnav_get_title_kind() flags */
+enum {
+	BDNAV_TITLE_BDJ         = 1,   /* BD-J title (else HDMV) */
+	BDNAV_TITLE_INTERACTIVE = 2,   /* interactive title: length / position should not be shown */
+};
+
 /* flags returned by bdnav_read_ex() */
 enum {
 	BDNAV_READ_POS_JUMP = 1,   /* data does not continue the previous read (playlist change / seek / silent BD-J jump) */
@@ -202,7 +208,7 @@ BDNAV_EXPORT int         bdnav_read_file(BDNAV* nav, const char* path, uint8_t* 
 /* v6 */
 BDNAV_EXPORT BDNAV*      bdnav_open_ex(const char* utf8_path, const BDNAV_CONFIG* cfg, char* err, int errlen);
 BDNAV_EXPORT int         bdnav_read_ex(BDNAV* nav, uint8_t* buf, int len, BDNAV_EVENT* ev, uint32_t* flags);
-BDNAV_EXPORT int         bdnav_get_title_kind(BDNAV* nav, uint32_t title); /* 0 HDMV, 1 BD-J, -1 unknown; 0 = top menu, 0xFFFF = first play */
+BDNAV_EXPORT int         bdnav_get_title_kind(BDNAV* nav, uint32_t title); /* BDNAV_TITLE_* flags, -1 unknown; 0 = top menu, 0xFFFF = first play */
 BDNAV_EXPORT int         bdnav_bdj_started(BDNAV* nav);   /* 1 if a Java VM was created in this process */
 
 /* plane access: always pair with bdnav_unlock_plane() when lock returned 1 */

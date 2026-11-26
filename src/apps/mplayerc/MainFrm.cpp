@@ -52,6 +52,7 @@
 #define TIMER_BDNAV_HIDE 0xBD0E
 #define TIMER_BDNAV_REBUILD 0xBD0F
 #define TIMER_BDNAV_PLAYOUT 0xBD10
+#define TIMER_BDNAV_REPAINT 0xBD11
 
 #include <ExtLib/BaseClasses/mtype.h>
 #include <Mpconfig.h>
@@ -698,12 +699,24 @@ static HMODULE PlayerImm32()
 	return h;
 }
 
-static void PlayerDisableIME(HWND hWnd)
+// cancel a composition the IME may have started for a key that is used as a hotkey
+// (the IME stays enabled: the input mode shown by Windows does not change while the player has focus)
+static void PlayerImmCancel(HWND hWnd)
 {
-	typedef BOOL (WINAPI *PFN)(HWND, HANDLE, DWORD);
-	static PFN fn = PlayerImm32() ? (PFN)::GetProcAddress(PlayerImm32(), "ImmAssociateContextEx") : nullptr;
-	if (fn && hWnd) {
-		fn(hWnd, nullptr, 0);
+	typedef HANDLE (WINAPI *PFN_GET)(HWND);
+	typedef BOOL (WINAPI *PFN_REL)(HWND, HANDLE);
+	typedef BOOL (WINAPI *PFN_NOTIFY)(HANDLE, DWORD, DWORD, DWORD);
+	static PFN_GET    fnGet    = PlayerImm32() ? (PFN_GET)::GetProcAddress(PlayerImm32(), "ImmGetContext") : nullptr;
+	static PFN_REL    fnRel    = PlayerImm32() ? (PFN_REL)::GetProcAddress(PlayerImm32(), "ImmReleaseContext") : nullptr;
+	static PFN_NOTIFY fnNotify = PlayerImm32() ? (PFN_NOTIFY)::GetProcAddress(PlayerImm32(), "ImmNotifyIME") : nullptr;
+	if (!fnGet || !fnRel || !fnNotify || !hWnd) {
+		return;
+	}
+	HANDLE hImc = fnGet(hWnd);
+	if (hImc) {
+		fnNotify(hImc, 0x0015 /*NI_COMPOSITIONSTR*/, 0x0004 /*CPS_CANCEL*/, 0);
+		fnNotify(hImc, 0x0011 /*NI_CLOSECANDIDATE*/, 0, 0);
+		fnRel(hWnd, hImc);
 	}
 }
 
@@ -997,9 +1010,8 @@ int CMainFrame::OnCreate(LPCREATESTRUCT lpCreateStruct)
 
 	cmdLineThread = std::thread([this] { cmdLineThreadFunction(); });
 
-	// BDMenu: no IME composition in the player window -> hotkeys work in any input mode (e.g. Chinese IME)
-	PlayerDisableIME(m_hWnd);
-	PlayerDisableIME(m_wndView.m_hWnd);
+	// BDMenu: the IME stays enabled in the player window (Windows keeps showing the user's input mode);
+	// keys taken by the IME are turned back into hotkeys in PreTranslateMessage
 
 	return 0;
 }
@@ -1359,6 +1371,7 @@ BOOL CMainFrame::PreTranslateMessage(MSG* pMsg)
 			const UINT vk = PlayerImmGetVirtualKey(pMsg->hwnd);
 			if (vk && vk != VK_PROCESSKEY) {
 				pMsg->wParam = vk;
+				PlayerImmCancel(pMsg->hwnd);
 			}
 		}
 	}
@@ -2549,6 +2562,13 @@ void CMainFrame::OnTimer(UINT_PTR nIDEvent)
 	if (nIDEvent == TIMER_BDNAV_HIDE) {
 		KillTimer(TIMER_BDNAV_HIDE);
 		BDNavUpdateMenu(true);
+		return;
+	}
+	if (nIDEvent == TIMER_BDNAV_REPAINT) {
+		KillTimer(TIMER_BDNAV_REPAINT);
+		if (m_bBDNavActive && m_pCAP && m_eMediaLoadState == MLS_LOADED && CBDNavigator::Get().IsRenderPending()) {
+			m_pCAP->Paint(false);
+		}
 		return;
 	}
 	if (nIDEvent == TIMER_BDNAV_REBUILD) {
@@ -21679,6 +21699,9 @@ void CMainFrame::BDNavUpdateMenu(bool bHideTimer)
 		}
 		if (GetMediaState() != State_Running) {
 			m_pCAP->Paint(false);   // paused / still: show the change now
+		} else {
+			// still picture / BD-J idle: no new video frames -> repaint if no frame showed the change
+			SetTimer(TIMER_BDNAV_REPAINT, 80, nullptr);
 		}
 	} else if (m_bBDNavMenuShown) {
 		if (!bHideTimer) {
@@ -21756,12 +21779,25 @@ bool CMainFrame::BDNavKey(UINT vk)
 		return false;
 	}
 
+	// number keys and the colour keys (F1-F4 = red, green, yellow, blue) while a menu is shown
+	if (vk >= '0' && vk <= '9') {
+		nav.Key(BDNAV_KEY_0 + (vk - '0'));
+		return true;
+	}
+	if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD9) {
+		nav.Key(BDNAV_KEY_0 + (vk - VK_NUMPAD0));
+		return true;
+	}
 	switch (vk) {
 		case VK_UP:     nav.Key(BDNAV_KEY_UP);    return true;
 		case VK_DOWN:   nav.Key(BDNAV_KEY_DOWN);  return true;
 		case VK_LEFT:   nav.Key(BDNAV_KEY_LEFT);  return true;
 		case VK_RIGHT:  nav.Key(BDNAV_KEY_RIGHT); return true;
 		case VK_RETURN: nav.Key(BDNAV_KEY_ENTER); return true;
+		case VK_F1:     nav.Key(BDNAV_KEY_RED);    return true;
+		case VK_F2:     nav.Key(BDNAV_KEY_GREEN);  return true;
+		case VK_F3:     nav.Key(BDNAV_KEY_YELLOW); return true;
+		case VK_F4:     nav.Key(BDNAV_KEY_BLUE);   return true;
 		default:        return false;
 	}
 }

@@ -52,9 +52,17 @@ bool CBDNavStream::Start()
 	}
 
 	// give the navigation some time to produce data for stream probing
+	// (BD-J: the Java VM and the disc's Xlets start first, the first playlist can take several seconds)
+	auto& nav = CBDNavigator::Get();
+	const DWORD wait = nav.GetStartWaitMs();
 	const DWORD start = ::GetTickCount();
-	while (::GetTickCount() - start < 3000 && m_len < 512 * KILOBYTE && !m_bEndOfStream && !m_bSegmentEnd) {
+	while (::GetTickCount() - start < wait && m_len < 512 * KILOBYTE && !m_bEndOfStream && !m_bSegmentEnd && nav.IsOpen()) {
 		Sleep(20);
+	}
+	if (nav.IsBDJDisc()) {
+		CString m;
+		m.Format(L"stream: first data after %u ms (%.1f MB)", ::GetTickCount() - start, m_len / 1048576.0);
+		BDNavLog(m);
 	}
 	return m_len > 0;
 }

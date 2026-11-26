@@ -80,6 +80,13 @@ public:
 	// returns the matching virtual ...\BDMV\STREAM\<clip>.m2ts path (lets the MPEG splitter read clip info)
 	CString PrepareClipInfoPath();
 
+	// BD-J
+	bool IsBDJDisc() const { return m_bBDJDisc; }
+	bool IsBDJTitle() const { return m_bBDJTitle; }
+	DWORD GetStartWaitMs() const { return m_bBDJDisc ? 25000 : 3000; }   // first data for the graph (BD-J: JVM + Xlet start)
+	// the menu changed but no presented frame has shown it yet (still picture / idle: no new video frames)
+	bool IsRenderPending();
+
 	// user input (main thread). Coordinates are relative to the video rectangle.
 	bool IsMenuVisible();                 // libbluray IG plane has visible content
 	void SetOverlayOn(bool on) { m_bOverlayOn = on; }
@@ -131,6 +138,10 @@ private:
 	RECT       m_planeBox = {};
 	bool       m_planeVisible = false;
 	bool       m_bPlaneSynced = false;   // m_plane/m_planeConv match the dll plane (partial updates allowed)
+	bool       m_bBDJDisc = false;
+	std::atomic<bool> m_bBDJTitle{ false };
+	int        m_titleFlags = 0;
+	int        m_keyInterest = -1;
 	uint32_t   m_planeVersion = 0;
 
 	// navigation state (under m_csNav)
