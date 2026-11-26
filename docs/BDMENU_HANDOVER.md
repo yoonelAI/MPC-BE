@@ -88,6 +88,12 @@
 > 11-26 20:55 用户测：**Odyssey 正常、KARA 正常；Poor Things 字幕有效、进度条正常**，只剩进入正片后章节刻度延迟出现（等第一个时间锚点 ~3 秒）。
 >   20:57 修复（已编译部署）：GetChapters 在新图还没有到达任何锚点时，用第一个锚点的播放列表 / 建图时的播放列表（m_segPlaylist）。
 >   **P2-2 主体完成**。剩余 P2-3（字幕/音轨双向同步：播放器里切换写回光盘 bd_select_stream）、P2-4（稳定性、打包安装版+绿色版）。
+> 11-26 21:17 **P2-3**（已编译部署 builds\local，已推送；dll API **v7**，exe 和 dll 必须一起换）：
+>   - 播放器 → 光盘：新导出 `bdnav_select_stream(kind, number, enable)`（bd_select_stream，写 PSR1/PSR2）；CBDNavigator::SelectDiscStream(kind, pid, enable) 按当前播放列表/播放项把 PID 换成流编号。
+>     MainFrm::BDNavPollStreams（进度轮询里，每 300ms）：播放器当前音轨 PID / 字幕状态（PID、-1 关、0 外挂字幕）与"双方一致值"（m_nBDNavAudioSynced/SubSynced）不同 → 写回光盘；
+>     光盘 → 播放器同步后、BDNavAfterOpen 后更新一致值；重建/打开时置未知（只初始化不写）。外挂字幕不改光盘。光盘拒绝（UO 掩码）时返回 0，日志 "player -> disc ... (no change or not allowed)"。
+>   - 菜单叠在字幕上：CBDMenuSubPicProvider 持有当前字幕 provider（SetInner）；Render 先画字幕再把菜单 alpha 混合上去（RenderMenu bBlend，BlendSubpic 预乘/反 alpha）；
+>     同步队列分段 = 到字幕下一次变化为止（≤1 秒）；纹理尺寸用字幕的（菜单缩放进去）。UpdateSubtitle/SetSubtitle 改走 BDNavSetSubProvider：菜单显示时换字幕不会把菜单顶掉。
 
 ## ⏳ 长期待办（不排期）
 - **Java 21 下 BD-J 失败**（用户 11-26 18:22 要求进长期待办）：Odyssey/Java 21 时 libbluray VFS 缓存未按需从 ISO 拷出 `BDMV\JAR\00001\*.xml` → FileNotFoundException → MenuXlet 启动失败；Java 17 正常。

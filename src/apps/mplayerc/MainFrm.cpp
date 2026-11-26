@@ -2666,6 +2666,7 @@ void CMainFrame::OnTimer(UINT_PTR nIDEvent)
 							if (CBDNavigator::Get().PollShowGate()) {
 								BDNavUpdateMenu(false);   // held-back BD-J menu: the video reached it
 							}
+							BDNavPollStreams();
 						}
 
 						if (m_abRepeatPositionBEnabled && rtNow >= m_abRepeatPositionB) {
@@ -16854,7 +16855,7 @@ void CMainFrame::UpdateSubtitle(bool fDisplayMessage, bool fApplyDefStyle)
 		m_OSD.DisplayMessage(OSD_TOPLEFT, ResStr(IDS_SUBTITLE_STREAM_OFF));
 	}
 
-	m_pCAP->SetSubPicProvider(nullptr);
+	BDNavSetSubProvider(nullptr);
 }
 
 void CMainFrame::SetSubtitle(ISubStream* pSubStream, int iSubtitleSel/* = -1*/, bool fApplyDefStyle/* = false*/)
@@ -16990,7 +16991,7 @@ void CMainFrame::SetSubtitle(ISubStream* pSubStream, int iSubtitleSel/* = -1*/, 
 		m_pCAP->SetSubpicSettings(&s.m_VRSettings.SubpicSets);
 
 		g_bExternalSubtitle = (std::find(m_ExternalSubstreams.cbegin(), m_ExternalSubstreams.cend(), pSubStream) != m_ExternalSubstreams.cend());
-		m_pCAP->SetSubPicProvider(CComQIPtr<ISubPicProvider>(pSubStream));
+		BDNavSetSubProvider(CComQIPtr<ISubPicProvider>(pSubStream));
 		if (s.fUseSybresync) {
 			CAutoLock cAutoLock(&m_csSubLock);
 			m_wndSubresyncBar.SetSubtitle(pSubStream, m_pCAP->GetFPS());
@@ -21486,6 +21487,8 @@ BOOL CMainFrame::OpenBDNav(const CString& path, BOOL bAddRecent)
 	m_bBDNavActive = true;
 	m_bBDNavMenuShown = false;
 	m_strBDNavOrigPath = fn;
+	m_nBDNavAudioSynced = kBDNavUnknown;
+	m_nBDNavSubSynced = kBDNavUnknown;
 	g_bBDNavSubpicNoQueue = true;
 	g_bBDNavNoQueueApplied = false;
 
@@ -21605,6 +21608,7 @@ void CMainFrame::BDNavSyncSubtitle()
 		m_pCAP->SetSubPicProvider(m_pBDMenuSubPic);   // the menu stays on top
 		m_pCAP->Invalidate();
 	}
+	m_nBDNavSubSynced = BDNavPlayerSubState();
 }
 
 void CMainFrame::BDNavRebuild()
@@ -21614,6 +21618,8 @@ void CMainFrame::BDNavRebuild()
 		return;
 	}
 	BDNavLog(L"stream format changed -> rebuilding the playback graph");
+	m_nBDNavAudioSynced = kBDNavUnknown;
+	m_nBDNavSubSynced = kBDNavUnknown;
 
 	m_bBDNavKeepSession = true;
 	CloseMedia(TRUE);
@@ -21645,6 +21651,8 @@ void CMainFrame::BDNavAfterOpen()
 	BDNavSyncSubtitle();
 	BDNavUpdateMenu(false);
 	BDNavUpdateChapters();
+	m_nBDNavAudioSynced = BDNavPlayerAudioPid();
+	m_nBDNavSubSynced = BDNavPlayerSubState();
 }
 
 void CMainFrame::BDNavUpdateChapters()
@@ -21663,6 +21671,123 @@ void CMainFrame::BDNavUpdateChapters()
 	m_wndSeekBar.SetChapterBag(m_pCB);
 	m_OSD.SetChapterBag(m_pCB);
 	m_wndSeekBar.Invalidate();
+}
+
+void CMainFrame::BDNavSetSubProvider(ISubPicProvider* pSub)
+{
+	if (!m_pCAP) {
+		return;
+	}
+	if (m_bBDNavActive && m_bBDNavMenuShown && m_pBDMenuSubPic) {
+		static_cast<CBDMenuSubPicProvider*>(m_pBDMenuSubPic.p)->SetInner(pSub);
+		m_pCAP->SetSubPicProvider(m_pBDMenuSubPic);   // the menu stays on top of the new subtitle
+		m_pCAP->Invalidate();
+	} else {
+		m_pCAP->SetSubPicProvider(pSub);
+	}
+}
+
+static int BDNavPidFromName(const CString& name)
+{
+	// MPEG splitter stream names end with " (pid)", e.g. "Audio - English, DTS-HD MA ... (1100)"
+	const int r = name.ReverseFind(L')');
+	const int l = name.ReverseFind(L'(');
+	if (l < 0 || r != l + 5) {
+		return -1;
+	}
+	WCHAR* end = nullptr;
+	const CString hex = name.Mid(l + 1, 4);
+	const long v = wcstol(hex, &end, 16);
+	return (end && *end == 0 && v > 0) ? (int)v : -1;
+}
+
+int CMainFrame::BDNavPlayerAudioPid()
+{
+	CComQIPtr<IAMStreamSelect> pSS = m_pSwitcherFilter.p;
+	DWORD cStreams = 0;
+	if (!pSS || FAILED(pSS->Count(&cStreams))) {
+		return -1;
+	}
+	for (DWORD i = 0; i < cStreams; i++) {
+		DWORD dwFlags = 0;
+		WCHAR* pszName = nullptr;
+		if (SUCCEEDED(pSS->Info(i, nullptr, &dwFlags, nullptr, nullptr, &pszName, nullptr, nullptr)) && pszName) {
+			const CString name(pszName);
+			CoTaskMemFree(pszName);
+			if (dwFlags & (AMSTREAMSELECTINFO_ENABLED | AMSTREAMSELECTINFO_EXCLUSIVE)) {
+				return BDNavPidFromName(name);
+			}
+		}
+	}
+	return -1;
+}
+
+int CMainFrame::BDNavPlayerSubState()
+{
+	if (m_iSubtitleSel & 0x80000000) {
+		return -1;   // subtitles off
+	}
+	if (m_iSubtitleSel != 0) {
+		return 0;    // external subtitle: not a disc stream
+	}
+	CComQIPtr<IAMStreamSelect> pSS = m_pMainSourceFilter.p;
+	DWORD cStreams = 0;
+	if (!pSS || FAILED(pSS->Count(&cStreams))) {
+		return 0;
+	}
+	for (DWORD i = 0; i < cStreams; i++) {
+		DWORD dwFlags = 0, dwGroup = DWORD_MAX;
+		WCHAR* pszName = nullptr;
+		if (FAILED(pSS->Info(i, nullptr, &dwFlags, nullptr, &dwGroup, &pszName, nullptr, nullptr))) {
+			continue;
+		}
+		CString name;
+		if (pszName) {
+			name = pszName;
+			CoTaskMemFree(pszName);
+		}
+		if (dwGroup == SUBTITLE_GROUP && (dwFlags & (AMSTREAMSELECTINFO_ENABLED | AMSTREAMSELECTINFO_EXCLUSIVE))) {
+			const int pid = BDNavPidFromName(name);
+			return pid > 0 ? pid : 0;
+		}
+	}
+	return 0;
+}
+
+void CMainFrame::BDNavPollStreams()
+{
+	// the user switched audio / subtitles in the player (menus, hotkeys, OSD): tell the disc (PSR1/PSR2),
+	// so that the disc menus show the same selection and keep it across playlists
+	if (!m_bBDNavActive || m_eMediaLoadState != MLS_LOADED) {
+		return;
+	}
+	const DWORD now = ::GetTickCount();
+	if (now - m_dwBDNavStreamPoll < 300) {
+		return;
+	}
+	m_dwBDNavStreamPoll = now;
+	auto& nav = CBDNavigator::Get();
+
+	const int a = BDNavPlayerAudioPid();
+	if (m_nBDNavAudioSynced == kBDNavUnknown) {
+		m_nBDNavAudioSynced = a;
+	} else if (a > 0 && a != m_nBDNavAudioSynced) {
+		m_nBDNavAudioSynced = a;
+		nav.SelectDiscStream(0, a, true);
+	}
+
+	const int sub = BDNavPlayerSubState();
+	if (m_nBDNavSubSynced == kBDNavUnknown) {
+		m_nBDNavSubSynced = sub;
+	} else if (sub != m_nBDNavSubSynced) {
+		m_nBDNavSubSynced = sub;
+		if (sub > 0) {
+			nav.SelectDiscStream(1, sub, true);
+		} else if (sub < 0) {
+			nav.SelectDiscStream(1, 0, false);
+		}
+		// external subtitle (0): the disc keeps its own selection
+	}
 }
 
 void CMainFrame::BDNavSyncAudio(int pid)
@@ -21687,6 +21812,7 @@ void CMainFrame::BDNavSyncAudio(int pid)
 					pSS->Enable(i, AMSTREAMSELECTENABLE_ENABLE);
 					BDNavLog(L"audio: disc selected " + name);
 				}
+				m_nBDNavAudioSynced = BDNavPlayerAudioPid();
 				return;
 			}
 		}
@@ -21709,6 +21835,12 @@ void CMainFrame::BDNavUpdateMenu(bool bHideTimer)
 		const bool bSingle = static_cast<CBDMenuSubPicProvider*>(m_pBDMenuSubPic.p)->IsSingle();
 		if (!m_bBDNavMenuShown) {
 			m_bBDNavMenuShown = true;
+			// the current subtitle stays visible under the menu
+			CComQIPtr<ISubPicProvider> pSub;
+			if (m_pCurrentSubStream && !(m_iSubtitleSel & 0x80000000)) {
+				pSub = m_pCurrentSubStream.p;
+			}
+			static_cast<CBDMenuSubPicProvider*>(m_pBDMenuSubPic.p)->SetInner(pSub);
 			m_pCAP->SetSubPicProvider(m_pBDMenuSubPic);
 			m_pCAP->Invalidate();
 		} else if (bSingle) {
@@ -21737,6 +21869,7 @@ void CMainFrame::BDNavUpdateMenu(bool bHideTimer)
 		}
 		m_bBDNavMenuShown = false;
 		nav.SetOverlayOn(false);
+		static_cast<CBDMenuSubPicProvider*>(m_pBDMenuSubPic.p)->SetInner(nullptr);
 		CComQIPtr<ISubPicProvider> pSPP;
 		if (m_pCurrentSubStream && !(m_iSubtitleSel & 0x80000000)) {
 			pSPP = m_pCurrentSubStream.p;

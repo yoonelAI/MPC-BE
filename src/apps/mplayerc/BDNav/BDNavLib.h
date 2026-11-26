@@ -38,7 +38,8 @@
 	X(bdnav_open_ex)                \
 	X(bdnav_read_ex)                \
 	X(bdnav_get_title_kind)         \
-	X(bdnav_bdj_started)
+	X(bdnav_bdj_started)             \
+	X(bdnav_select_stream)
 
 class CBDNavLib
 {

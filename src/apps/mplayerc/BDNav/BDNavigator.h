@@ -69,6 +69,9 @@ public:
 	int  GetDiscAudioPid();
 	bool TakeSubtitleChange() { return m_bPgDirty.exchange(false); }
 	int  GetDiscSubtitlePid(bool& bEnabled);
+	// player -> disc: the user picked an audio / subtitle stream in the player (kind 0 audio, 1 PG).
+	// pid <= 0 with kind 1 and !enable: subtitles off. Returns the libbluray result (1 = selected).
+	int  SelectDiscStream(int kind, int pid, bool enable);
 	void ClearReader(CBDNavReader* pReader);
 	bool IsSegmentPlayedOut();
 	int  SegmentRemainingMs();
@@ -110,7 +113,8 @@ public:
 
 	// subpicture rendering (subpic queue thread)
 	bool GetPlaneSize(SIZE& sz);
-	bool RenderMenu(SubPicDesc& spd, RECT& bbox);
+	// bBlend: something (subtitle) is already drawn in spd -> blend the menu over it
+	bool RenderMenu(SubPicDesc& spd, RECT& bbox, bool bBlend = false);
 
 private:
 	CBDNavigator() = default;

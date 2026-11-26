@@ -16,7 +16,7 @@
 extern "C" {
 #endif
 
-#define BDNAV_API_VERSION 6
+#define BDNAV_API_VERSION 7
 
 #ifdef BDNAV_BUILD
 #define BDNAV_EXPORT __declspec(dllexport)
@@ -210,6 +210,9 @@ BDNAV_EXPORT BDNAV*      bdnav_open_ex(const char* utf8_path, const BDNAV_CONFIG
 BDNAV_EXPORT int         bdnav_read_ex(BDNAV* nav, uint8_t* buf, int len, BDNAV_EVENT* ev, uint32_t* flags);
 BDNAV_EXPORT int         bdnav_get_title_kind(BDNAV* nav, uint32_t title); /* BDNAV_TITLE_* flags, -1 unknown; 0 = top menu, 0xFFFF = first play */
 BDNAV_EXPORT int         bdnav_bdj_started(BDNAV* nav);   /* 1 if a Java VM was created in this process */
+/* v7: player -> disc stream selection (PSR1 / PSR2). kind 0 audio, 1 PG/TextST; number 1..N;
+   enable only for PG. Returns 1 selected, 0 no change / refused by the UO mask, <0 error */
+BDNAV_EXPORT int         bdnav_select_stream(BDNAV* nav, int kind, uint32_t number, int enable);
 
 /* plane access: always pair with bdnav_unlock_plane() when lock returned 1 */
 BDNAV_EXPORT int         bdnav_lock_plane(BDNAV* nav, int plane, BDNAV_PLANE* out);

@@ -1289,6 +1289,49 @@ void CBDNavigator::PostNotify()
 	}
 }
 
+int CBDNavigator::SelectDiscStream(int kind, int pid, bool enable)
+{
+	CUILock lock(*this);
+	if (!m_nav || m_playlist < 0) {
+		return -1;
+	}
+	auto& lib = CBDNavLib::Get();
+	int number = 0;
+	if (pid > 0) {
+		for (int n = 1; n < 256; n++) {
+			const int p = lib.bdnav_get_stream_pid(m_nav, (uint32_t)m_playlist, (uint32_t)std::max(m_playitem, 0), kind, n);
+			if (p < 0) {
+				break;
+			}
+			if (p == pid) {
+				number = n;
+				break;
+			}
+		}
+	} else if (kind == 1) {
+		number = m_pgNumber > 0 ? m_pgNumber : 1;   // subtitles off: keep the stream number
+	}
+	CString m;
+	if (number <= 0) {
+		m.Format(L"player -> disc: %s pid 0x%04x not in %05d.mpls item %d", kind ? L"subtitle" : L"audio", pid, m_playlist, m_playitem);
+		BDNavLog(m);
+		return -1;
+	}
+	const int r = lib.bdnav_select_stream(m_nav, kind, (uint32_t)number, enable ? 1 : 0);
+	if (kind == 0 && r > 0) {
+		m_audioNumber = number;
+	}
+	if (kind == 1 && r > 0) {
+		m_pgNumber = number;
+		m_pgEnabled = enable;
+	}
+	m.Format(L"player -> disc: %s stream %d (pid 0x%04x)%s -> %d%s", kind ? L"subtitle" : L"audio", number, pid,
+		kind ? (enable ? L" on" : L" off") : L"", r, r == 0 ? L" (no change or not allowed by the disc)" : L"");
+	BDNavLog(m);
+	FlushLibLog();
+	return r;
+}
+
 bool CBDNavigator::IsRenderPending()
 {
 	CAutoLock lock(&m_csPlane);
@@ -1465,7 +1508,41 @@ bool CBDNavigator::GetPlaneSize(SIZE& sz)
 	return true;
 }
 
-bool CBDNavigator::RenderMenu(SubPicDesc& spd, RECT& bbox)
+// MPC subpicture pixels: premultiplied colour, inverted alpha (0xFF000000 = transparent)
+static inline uint32_t MenuToSubpic(uint32_t c)
+{
+	const uint32_t a = c >> 24;
+	if (a == 0) {
+		return 0xFF000000;
+	}
+	if (a == 255) {
+		return c & 0x00FFFFFF;
+	}
+	const uint32_t r = ((c >> 16) & 0xFF) * a / 255;
+	const uint32_t g = ((c >> 8) & 0xFF) * a / 255;
+	const uint32_t b = (c & 0xFF) * a / 255;
+	return ((255 - a) << 24) | (r << 16) | (g << 8) | b;
+}
+
+// src over dst, both in the subpicture format
+static inline uint32_t BlendSubpic(uint32_t src, uint32_t dst)
+{
+	const uint32_t ia = src >> 24;   // 255 - alpha of the menu pixel
+	if (ia == 0xFF) {
+		return dst;
+	}
+	if (ia == 0) {
+		return src;
+	}
+	const uint32_t ida = dst >> 24;
+	const uint32_t outA = ia * ida / 255;
+	const uint32_t r = std::min<uint32_t>(((src >> 16) & 0xFF) + ((dst >> 16) & 0xFF) * ia / 255, 255);
+	const uint32_t g = std::min<uint32_t>(((src >> 8) & 0xFF) + ((dst >> 8) & 0xFF) * ia / 255, 255);
+	const uint32_t b = std::min<uint32_t>((src & 0xFF) + (dst & 0xFF) * ia / 255, 255);
+	return (outA << 24) | (r << 16) | (g << 8) | b;
+}
+
+bool CBDNavigator::RenderMenu(SubPicDesc& spd, RECT& bbox, bool bBlend)
 {
 	SetRectEmpty(&bbox);
 
@@ -1498,6 +1575,19 @@ bool CBDNavigator::RenderMenu(SubPicDesc& spd, RECT& bbox)
 	}
 
 	const bool same = (sw == spd.w && sh == spd.h);
+	if (bBlend) {
+		// a subtitle is already in the subpicture: blend instead of overwriting the whole menu box
+		for (LONG y = db.top; y < db.bottom; y++) {
+			const int syy = same ? y : std::min(MulDiv(y, sh, spd.h), sh - 1);
+			uint32_t* dst = (uint32_t*)(spd.bits + (size_t)spd.pitch * y);
+			for (LONG x = db.left; x < db.right; x++) {
+				const int sxx = same ? x : std::min(MulDiv(x, sw, spd.w), sw - 1);
+				const uint32_t c = (same && m_planeConv.size() == m_plane.size())
+					? m_planeConv[(size_t)syy * sw + sxx] : MenuToSubpic(m_plane[(size_t)syy * sw + sxx]);
+				dst[x] = BlendSubpic(c, dst[x]);
+			}
+		}
+	} else
 	if (same && m_planeConv.size() == m_plane.size()) {
 		const size_t bytes = (size_t)(db.right - db.left) * 4;
 		for (LONG y = db.top; y < db.bottom; y++) {

@@ -1348,6 +1348,16 @@ public:
 	void BDNavLogGraph();
 	bool BDNavMouse(const CPoint& point, bool bClick);
 	bool BDNavKey(UINT vk);
+	// subtitle provider for the renderer; while a disc menu is shown the subtitle goes under the menu
+	void BDNavSetSubProvider(ISubPicProvider* pSub);
+	// player -> disc stream selection (P2-3)
+	static const int kBDNavUnknown = INT_MIN;
+	int   m_nBDNavAudioSynced = kBDNavUnknown;   // audio PID both sides agree on
+	int   m_nBDNavSubSynced = kBDNavUnknown;     // subtitle state both agree on: PID, -1 off, 0 not a disc stream
+	DWORD m_dwBDNavStreamPoll = 0;
+	int   BDNavPlayerAudioPid();
+	int   BDNavPlayerSubState();
+	void  BDNavPollStreams();
 
 private:
 	int			GetStreamCount(DWORD dwSelGroup);

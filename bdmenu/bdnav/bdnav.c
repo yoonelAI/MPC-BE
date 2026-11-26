@@ -512,6 +512,12 @@ BDNAV_EXPORT BDNAV* bdnav_open_ex(const char* utf8_path, const BDNAV_CONFIG* cfg
 
 BDNAV_EXPORT int bdnav_bdj_started(BDNAV* nav) { (void)nav; return g_jvm_created ? 1 : 0; }
 
+BDNAV_EXPORT int bdnav_select_stream(BDNAV* nav, int kind, uint32_t number, int enable)
+{
+	if (!nav || number < 1) return -1;
+	return bd_select_stream(nav->bd, kind == 0 ? BLURAY_AUDIO_STREAM : BLURAY_PG_TEXTST_STREAM, number, enable ? 1 : 0);
+}
+
 BDNAV_EXPORT int bdnav_get_title_kind(BDNAV* nav, uint32_t title)
 {
 	if (!nav) return -1;
