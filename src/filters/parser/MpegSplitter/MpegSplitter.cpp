@@ -1858,6 +1858,28 @@ STDMETHODIMP CMpegSplitterFilter::Enable(long lIndex, DWORD dwFlags)
 					return S_OK;
 				}
 
+				if (m_pBDNavSource && to.codec != CMpegSplitterFile::stream_codec::TELETEXT) {
+					// BDMenu: the navigation stream cannot be restarted (Stop/Run would reset the stream time
+					// and lose the position): switch the pin to the new PID while running if the downstream
+					// filter accepts the new type without a reconnection (e.g. PGS -> PGS, same audio codec)
+					bool bAccept = false;
+					if (auto* pPin = GetOutputPin(from)) {
+						if (CComQIPtr<IPin> pPinTo = pPin->GetConnected()) {
+							for (auto& mt : to.mts) {
+								if (S_OK == pPinTo->QueryAccept(&mt)) {
+									bAccept = true;
+									break;
+								}
+							}
+						}
+					}
+					if (bAccept) {
+						const HRESULT hr2 = RenameOutputPin(from, to, to.mts, FALSE);
+						DLog(L"CMpegSplitterFilter::Enable() : BDNav live switch %u -> %u, hr = 0x%08x", (DWORD)from, (DWORD)to, hr2);
+						return hr2;
+					}
+				}
+
 				CComQIPtr<IMediaControl> pMC(m_pGraph);
 				OAFilterState fs = -1;
 				if(pMC) {

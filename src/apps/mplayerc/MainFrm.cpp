@@ -2663,6 +2663,9 @@ void CMainFrame::OnTimer(UINT_PTR nIDEvent)
 							// BDMenu: position/duration of the current Blu-ray title (playlist)
 							CBDNavigator::Get().GetTitlePos(rtNow, rtDur);
 							BDNavUpdateChapters();   // chapters of the playlist that plays now (the disc reads ahead)
+							if (CBDNavigator::Get().PollShowGate()) {
+								BDNavUpdateMenu(false);   // held-back BD-J menu: the video reached it
+							}
 						}
 
 						if (m_abRepeatPositionBEnabled && rtNow >= m_abRepeatPositionB) {
@@ -12629,7 +12632,11 @@ CString CMainFrame::OpenFile(OpenFileData* pOFD, const CStringW& youtubeUrl)
 			const CString& orig = m_strBDNavOrigPath;
 			CString t(orig);
 			t.TrimRight(L'\\');
-			m_PlaybackInfo.FileName = orig.IsEmpty() ? CBDNavigator::Get().GetLabel() : GetFileName(t);
+			// disc title (BD metadata / UDF volume label), else the image / folder name
+			m_PlaybackInfo.FileName = CBDNavigator::Get().GetLabel();
+			if (m_PlaybackInfo.FileName.IsEmpty() && !orig.IsEmpty()) {
+				m_PlaybackInfo.FileName = GetFileName(t);
+			}
 		}
 	}
 	else if (youtubeUrl.IsEmpty()) {
@@ -21794,8 +21801,14 @@ bool CMainFrame::BDNavKey(UINT vk)
 		nav.MenuCall();
 		return true;
 	}
-	if (!m_bBDNavMenuShown || ctrl || shift) {
+	if (ctrl || shift) {
 		return false;
+	}
+	if (!m_bBDNavMenuShown) {
+		// BD-J intros / warnings: arrows and ENTER are remote keys for the disc (no seeking)
+		if (!(nav.WantsRemoteKeys() && (vk == VK_UP || vk == VK_DOWN || vk == VK_LEFT || vk == VK_RIGHT || vk == VK_RETURN))) {
+			return false;
+		}
 	}
 
 	// number keys and the colour keys (F1-F4 = red, green, yellow, blue) while a menu is shown

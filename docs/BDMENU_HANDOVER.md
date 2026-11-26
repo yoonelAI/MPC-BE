@@ -74,6 +74,17 @@
 >   截断原因：用户在片头时按了方向键（恢复提示）→ UserAction 标记"用户跳转"（15 秒窗口）→ 片头**自然结束**的 TITLE 0 被当成用户跳转 → flush 丢掉播放中的结尾。
 >   20:24 修复（已编译部署）：END_OF_TITLE 之后的跳转视为光盘自然前进，不 flush（m_bNaturalEnd）；方向键不再 UserAction（只有回车/数字/彩色键/菜单/点击/拖动才算）；
 >   导航模式 m_PlaybackInfo.FileName = 原 ISO/文件夹名。
+> 11-26 20:38 用户测：KARA 正常。Odyssey：无恢复按钮（光盘自己决定，第 4 次打开又出现）、标题变成长文件名（用户要"单纯的名字"）、环球片头上就出现了菜单按钮、
+>   片头里按方向键 = MPC 快进 5 秒（日志 user: seek 0/5/10/15）→ 片头被跳/重放、BD-J 提前进主菜单；"恢复→主菜单→PLAY"直接进正片无 FBI（光盘自己直接 TITLE 1，未读警告片，非播放器丢弃）。
+>   Poor Things：恢复提示选 No → 正片前又一次探照灯 logo（=正片 00800 自带的片头，播放器未插播别的）；**选字幕后字幕不显示、进度条章节消失、再出现时从头开始**。
+>   根因：① MPEG 分离器切字幕/音轨 = 整个图 Stop→Run，导航流时间归零、锚点全失效；② 每次跳转会生成 2–3 个同位置标记（SeekTitle+SEEK 事件+无事件跳变），
+>   后到的锚点"同一标题时间、更晚流时间"→ 进度条落后/回跳；③ BD-J 菜单按"读到"时画出，比画面早 ~3 秒（环球片头上出现按钮）。
+>   20:46 修复（已编译部署，待测）：
+>   - MpegSplitter::Enable：导航模式下（m_pBDNavSource）新 PID 下游能直接接受 → 运行中直接 RenameOutputPin(不重连、不 Stop)；否则仍走原流程。
+>   - AddAnchor 去重（同播放列表、同标题时间、6 秒内且小于播放列表长度 → 丢弃）；有跳转事件时不再为"无事件跳变"另加标记（m_bJumpEventPending）。
+>   - BD-J 菜单出现闸门：无用户输入时菜单从无到有 → 在读取位置排一个 kMarkMenuShow 标记，等视频播到该处（或 4 秒超时）才显示（PollShowGate，进度轮询里检查）。
+>   - BD-J 片头/警告等短播放列表（<10 分钟）里方向键/回车交给光盘（WantsRemoteKeys），不再触发 MPC 快进；正片里仍是快进。
+>   - 窗口标题 = 光盘标题（BD 元数据/卷标，如 "The Odyssey"），没有才用文件名。
 
 ## ⏳ 长期待办（不排期）
 - **Java 21 下 BD-J 失败**（用户 11-26 18:22 要求进长期待办）：Odyssey/Java 21 时 libbluray VFS 缓存未按需从 ISO 拷出 `BDMV\JAR\00001\*.xml` → FileNotFoundException → MenuXlet 启动失败；Java 17 正常。

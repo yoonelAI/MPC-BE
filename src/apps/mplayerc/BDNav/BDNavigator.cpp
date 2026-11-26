@@ -540,8 +540,17 @@ int CBDNavigator::ReadTS(BYTE* out, int outcap, bool& bEvent, bool& bFlush, std:
 	}
 
 	BDNAV_EVENT ev = {};
+	if (m_bShowMarkerReq.exchange(false)) {
+		QueueMarker(kMarkMenuShow);   // stream time of the data read when the BD-J menu appeared
+	}
 	uint32_t rflags = 0;
 	const int r = CBDNavLib::Get().bdnav_read_ex(m_nav, out, want, &ev, &rflags);
+	if ((rflags & BDNAV_READ_POS_JUMP) && m_bJumpEventPending) {
+		m_bJumpEventPending = false;   // the jump was announced by an event (marker already queued)
+		rflags &= ~BDNAV_READ_POS_JUMP;
+	} else if (r > 0 && ev.event == BDNAV_EV_NONE) {
+		m_bJumpEventPending = false;
+	}
 	if ((rflags & BDNAV_READ_POS_JUMP) && ev.event == BDNAV_EV_NONE && m_bBDJDisc) {
 		// BD-J moved the playback position without telling us: new time anchor for the progress bar
 		QueueMarker();
@@ -692,6 +701,10 @@ void CBDNavigator::HandleEvent(const BDNAV_EVENT& ev)
 
 	if (ev.event == BDNAV_EV_PLAYLIST || ev.event == BDNAV_EV_SEEK) {
 		QueueMarker();
+	}
+	if (ev.event == BDNAV_EV_PLAYLIST || ev.event == BDNAV_EV_SEEK || ev.event == BDNAV_EV_PLAYITEM
+			|| ev.event == BDNAV_EV_TITLE || ev.event == BDNAV_EV_PLAYLIST_STOP) {
+		m_bJumpEventPending = true;
 	}
 
 	if (ev.event == BDNAV_EV_END_OF_TITLE) {
@@ -978,7 +991,7 @@ void CBDNavigator::CheckAutoMenu()
 	}
 }
 
-void CBDNavigator::QueueMarker()
+void CBDNavigator::QueueMarker(uint32_t extraFlags)
 {
 	// m_csNav held
 	Marker m = {};
@@ -988,7 +1001,8 @@ void CBDNavigator::QueueMarker()
 	m.seq      = ++m_markerSeq;
 	m.flags    = ((m_titleFlags & BDNAV_TITLE_INTERACTIVE) ? kMarkInteractive : 0)
 	           | (m_bBDJTitle ? kMarkBDJ : 0)
-	           | (m_title == 0 ? kMarkTopMenu : 0);
+	           | (m_title == 0 ? kMarkTopMenu : 0)
+	           | extraFlags;
 	m_pendingMarkers.push_back(m);
 }
 
@@ -1013,11 +1027,28 @@ void CBDNavigator::AddAnchor(REFERENCE_TIME rtStream, const Marker& m)
 	a.playlist = m.playlist;
 	a.seq      = m.seq;
 	a.flags    = m.flags;
+	if (m.flags & kMarkMenuShow) {
+		CAutoLock lock(&m_csPlane);
+		if (m_bShowGate) {
+			m_rtShowAt = rtStream;
+		}
+	}
 	{
 		CAutoLock lock(&m_csAnchor);
 		// anchors at/after this stream time belong to data that was flushed
 		while (!m_anchors.empty() && m_anchors.back().rt >= a.rt) {
 			m_anchors.pop_back();
+		}
+		if (!m_anchors.empty()) {
+			// several markers for the same position (seek + SEEK event, per-track reports, timeouts):
+			// a later report of the same title time would move the seek bar back -> ignore it
+			// (a loop restart of the same playlist is at least one playlist length later)
+			const Anchor& b = m_anchors.back();
+			const REFERENCE_TIME drt = a.rt - b.rt;
+			if (b.playlist == a.playlist && std::abs(b.title - a.title) < 20000
+					&& drt < 60000000 && drt < b.dur - 10000000) {
+				return;
+			}
 		}
 		m_anchors.push_back(a);
 		while (m_anchors.size() > 16) {
@@ -1182,6 +1213,18 @@ void CBDNavigator::OnNotify(int plane, int reason)
 					cv.bottom = std::min(dr.bottom, newBox.bottom);
 				}
 				m_planeBox = newBox;
+				if (!m_planeVisible && p.argb_source && !m_bOverlayOn && m_bPlaying) {
+					// BD-J menu appears: if the disc moved there by itself (no input), it is ahead of the
+					// video by the read-ahead -> hold it back until that data plays
+					const DWORD now = ::GetTickCount();
+					const DWORD lastInput = std::max(m_dwInputTick, m_dwUserActionTick);
+					if ((!lastInput || now - lastInput > 1500) && GetStreamTime() > 0) {
+						m_bShowGate = true;
+						m_dwGateTick = now;
+						m_rtShowAt = -1;
+						m_bShowMarkerReq = true;
+					}
+				}
 				m_planeVisible = true;
 				m_bPlaneSynced = true;
 
@@ -1209,6 +1252,7 @@ void CBDNavigator::OnNotify(int plane, int reason)
 				// empty flush / hide / close: keep the last content (the main thread hides it after a short delay)
 				m_planeVisible = false;
 				m_bPlaneSynced = false;
+				m_bShowGate = false;
 				if (reason == BDNAV_OV_CLOSE) {
 					m_plane.clear();
 				}
@@ -1246,10 +1290,58 @@ bool CBDNavigator::IsRenderPending()
 	return m_bOverlayOn && m_planeVisible && m_planeVersion != m_lastRenderedVersion;
 }
 
+bool CBDNavigator::ShowGateOpen()
+{
+	// m_csPlane held
+	if (!m_bShowGate) {
+		return true;
+	}
+	const bool timeout = ::GetTickCount() - m_dwGateTick > 4000;
+	if (timeout || (m_rtShowAt >= 0 && GetStreamTime() + 400000 >= m_rtShowAt)) {
+		m_bShowGate = false;
+		if (m_bVerbose) {
+			CString m;
+			m.Format(L"BD-J menu shown %s (%u ms after it was drawn)", timeout ? L"(timeout)" : L"in sync with the video", ::GetTickCount() - m_dwGateTick);
+			BDNavLog(m);
+		}
+		return true;
+	}
+	return false;
+}
+
+bool CBDNavigator::PollShowGate()
+{
+	CAutoLock lock(&m_csPlane);
+	if (!m_bShowGate || !m_planeVisible) {
+		return false;
+	}
+	return ShowGateOpen();
+}
+
+bool CBDNavigator::WantsRemoteKeys()
+{
+	if (!m_bBDJDisc) {
+		return false;
+	}
+	const REFERENCE_TIME now = GetStreamTime();
+	CAutoLock lock(&m_csAnchor);
+	const Anchor* cur = nullptr;
+	for (const auto& a : m_anchors) {
+		if (a.rt <= now) {
+			cur = &a;
+		}
+	}
+	if (!cur) {
+		return m_bBDJTitle;
+	}
+	// BD-J intro / warning / menu clip: the disc's remote keys; main feature: player hotkeys (seek)
+	return (cur->flags & kMarkBDJ) && cur->dur < (REFERENCE_TIME)kLongTitle90k * 1000 / 9;
+}
+
 bool CBDNavigator::IsMenuVisible()
 {
 	CAutoLock lock(&m_csPlane);
-	return m_planeVisible;
+	return m_planeVisible && ShowGateOpen();
 }
 
 bool CBDNavigator::Mouse(int x, int y, int vw, int vh, bool bClick)

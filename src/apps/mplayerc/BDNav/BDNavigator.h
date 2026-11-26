@@ -47,6 +47,7 @@ public:
 	static const uint32_t kMarkInteractive = 0x01;   // interactive title: no seek bar
 	static const uint32_t kMarkBDJ         = 0x02;
 	static const uint32_t kMarkTopMenu     = 0x04;
+	static const uint32_t kMarkMenuShow    = 0x08;   // BD-J menu appeared: show it when this data plays
 
 	// source filter (graph / reader thread)
 	bool StartPlayback();
@@ -91,6 +92,11 @@ public:
 	DWORD GetStartWaitMs() const { return m_bBDJDisc ? 25000 : 3000; }   // first data for the graph (BD-J: JVM + Xlet start)
 	// the menu changed but no presented frame has shown it yet (still picture / idle: no new video frames)
 	bool IsRenderPending();
+	// BD-J menus appear when the disc READS their position (ahead of playback): the overlay is held
+	// back until the video reaches that point. Main thread: true when a held-back menu may be shown now.
+	bool PollShowGate();
+	// arrows / ENTER go to the disc (remote control) although no menu is shown: BD-J intros, warnings
+	bool WantsRemoteKeys();
 
 	// user input (main thread). Coordinates are relative to the video rectangle.
 	bool IsMenuVisible();                 // libbluray IG plane has visible content
@@ -149,6 +155,13 @@ private:
 	int        m_keyInterest = -1;
 	unsigned long long m_flushTotal = 0;   // m_total when the last user-jump flush was requested
 	bool       m_bNaturalEnd = false;      // END_OF_TITLE before the next jump: the disc moved on by itself
+	bool       m_bJumpEventPending = false; // a jump event was handled: the next position jump is not "silent"
+	// show gate (under m_csPlane)
+	bool       m_bShowGate = false;
+	DWORD      m_dwGateTick = 0;
+	REFERENCE_TIME m_rtShowAt = -1;
+	std::atomic<bool> m_bShowMarkerReq{ false };
+	bool       ShowGateOpen();                // m_csPlane held
 	uint32_t   m_lastEvent = 0;            // suppress repeated END_OF_TITLE in the log
 	uint32_t   m_planeVersion = 0;
 
@@ -206,7 +219,7 @@ private:
 	static bool IsBlocked(const CString& root);
 	static void CheckCrashLock();
 	std::vector<Marker> m_pendingMarkers;   // under m_csNav
-	void QueueMarker();
+	void QueueMarker(uint32_t extraFlags = 0);
 
 	CCritSec   m_csReader;
 	CBDNavReader* m_pReader = nullptr;
