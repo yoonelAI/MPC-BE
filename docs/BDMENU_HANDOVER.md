@@ -69,6 +69,11 @@
 >   - 时间锚点带标题类型（kMarkInteractive/BDJ/TopMenu）：进度条隐藏按"正在播放的数据"判断；BD-J 菜单 + 超长循环（>4 小时）也隐藏。
 >   - 用户跳转（TITLE 事件 flush）后**第一个新播放列表再 flush 一次**（BD-J 在新标题起播前继续读旧播放列表，Odyssey Home 时多读 34MB 正片）→ 该播放列表若需重建则立即重建。
 >   - 窗口标题 = 盘名（不再显示 .bdnav）；导航模式不读写播放位置历史（SaveHistory 跳过）。
+> 11-26 20:20 用户测读取限速版：**Odyssey 恢复播放可用、FBI 正常、Home 正常**；**Poor Things PLAY 后出现光盘自己的"恢复播放"提示，操作有效**（=BD-J 书签，PLAY 不再卡）；KARA 正常。
+>   剩余：标题仍显示 .bdnav（窗口标题来自 m_PlaybackInfo.FileName，不是 m_SessionInfo.Title）；Universal 片头最后约 4 秒被截掉直接进主菜单。
+>   截断原因：用户在片头时按了方向键（恢复提示）→ UserAction 标记"用户跳转"（15 秒窗口）→ 片头**自然结束**的 TITLE 0 被当成用户跳转 → flush 丢掉播放中的结尾。
+>   20:24 修复（已编译部署）：END_OF_TITLE 之后的跳转视为光盘自然前进，不 flush（m_bNaturalEnd）；方向键不再 UserAction（只有回车/数字/彩色键/菜单/点击/拖动才算）；
+>   导航模式 m_PlaybackInfo.FileName = 原 ISO/文件夹名。
 
 ## ⏳ 长期待办（不排期）
 - **Java 21 下 BD-J 失败**（用户 11-26 18:22 要求进长期待办）：Odyssey/Java 21 时 libbluray VFS 缓存未按需从 ISO 拷出 `BDMV\JAR\00001\*.xml` → FileNotFoundException → MenuXlet 启动失败；Java 17 正常。

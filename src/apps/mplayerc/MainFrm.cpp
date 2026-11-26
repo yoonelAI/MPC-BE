@@ -12624,6 +12624,13 @@ CString CMainFrame::OpenFile(OpenFileData* pOFD, const CStringW& youtubeUrl)
 
 	if (!::PathIsURLW(pOFD->fi)) {
 		m_PlaybackInfo.FileName = GetFileName(pOFD->fi);
+		if (m_bBDNavActive) {
+			// BDMenu: disc image / folder name instead of the internal "<disc>.bdnav" marker file
+			const CString& orig = m_strBDNavOrigPath;
+			CString t(orig);
+			t.TrimRight(L'\\');
+			m_PlaybackInfo.FileName = orig.IsEmpty() ? CBDNavigator::Get().GetLabel() : GetFileName(t);
+		}
 	}
 	else if (youtubeUrl.IsEmpty()) {
 		m_PlaybackInfo.bUpdateTitle = true;

@@ -148,6 +148,7 @@ private:
 	int        m_titleFlags = 0;
 	int        m_keyInterest = -1;
 	unsigned long long m_flushTotal = 0;   // m_total when the last user-jump flush was requested
+	bool       m_bNaturalEnd = false;      // END_OF_TITLE before the next jump: the disc moved on by itself
 	uint32_t   m_lastEvent = 0;            // suppress repeated END_OF_TITLE in the log
 	uint32_t   m_planeVersion = 0;
 

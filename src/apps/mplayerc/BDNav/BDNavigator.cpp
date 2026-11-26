@@ -694,6 +694,21 @@ void CBDNavigator::HandleEvent(const BDNAV_EVENT& ev)
 		QueueMarker();
 	}
 
+	if (ev.event == BDNAV_EV_END_OF_TITLE) {
+		m_bNaturalEnd = true;
+	}
+	if (bJump && m_bNaturalEnd) {
+		// the title/playlist ended and the disc continues by itself (intro -> menu): the buffered data
+		// of the old playlist still has to be shown, it is not a user jump even if a key was pressed
+		if (m_bUserJumpPending) {
+			extra += L" [natural end, no flush]";
+		}
+		m_bUserJumpPending = false;
+		m_dwJumpArmTick = 0;
+	}
+	if (bJump) {
+		m_bNaturalEnd = false;
+	}
 	if (bJump && m_bUserJumpPending && ::GetTickCount() - m_dwUserActionTick < kUserJumpWindow) {
 		m_bUserJumpPending = false;
 		m_bFlushRequest = true;   // jump requested by the user: drop data buffered for the old position
@@ -1302,7 +1317,9 @@ void CBDNavigator::Key(uint32_t key)
 {
 	CUILock lock(*this);
 	if (m_nav) {
-		UserAction();
+		if (key != BDNAV_KEY_UP && key != BDNAV_KEY_DOWN && key != BDNAV_KEY_LEFT && key != BDNAV_KEY_RIGHT) {
+			UserAction();   // keys that can start something (ENTER, numbers, colour keys)
+		}
 		m_dwInputTick = ::GetTickCount();
 		const int r = CBDNavLib::Get().bdnav_user_input(m_nav, -1, key);
 		CString m;
